@@ -13,8 +13,7 @@ import warnings
 import pyxlsb
 import csv
 import xlwings as xw
-
-
+from playwright.sync_api import Page, Browser
 
 warnings.filterwarnings("ignore", category=UserWarning)
 import sys
@@ -138,176 +137,383 @@ def Process_A14_options(file_path, q):
     q.put(("status", "🎉 Processamento concluído com sucesso."))
 
 
-def download_A14(page,url_order,q,username,password) :
-        page.goto(url_order)
 
-        q.put(("status", "Realizando login..."))
-        q.put(("progress", 15))
-       
-        page.locator('[name="j_username"]').fill(username)
-        page.locator('[name="j_password"]').fill(password)
-        page.locator("button[type='submit']").click()
-        q.put(("status", "Login realizado com sucesso!"))
 
-        page.get_by_role("link", name="???tabstd???").hover()
-    
-        page.locator("li.ui-menuitem >> text=Download Table").click(timeout=200000)
-        page.locator("[id=\"filter:codtab_label\"]").click()
-        page.locator("[id=\"filter:codtab_panel\"]").get_by_text("???tabA14???").click()
+def download_A14(url_order,q,username,password,chromium_path) :
+    with sync_playwright() as p:
+        browser = None
+        try :
+            browser = p.chromium.launch(
+                    headless=False, # Always headless for worker threads
+                    executable_path=chromium_path,
+                    # args=["--start-maximized"]
+                )
+            context = browser.new_context(viewport={'width': 1920, 'height': 1080})
+            page = context.new_page()
+            page.goto(url_order)
+
+            q.put(("status", "Realizando login..."))
+            q.put(("progress", 15))
         
-        with page.expect_download() as download_info:
-            page.get_by_role("button", name="Downloads").click()
-           
-        download = download_info.value
+            page.locator('[name="j_username"]').fill(username)
+            page.locator('[name="j_password"]').fill(password)
+            page.locator("button[type='submit']").click()
+            q.put(("status", "Login realizado com sucesso!"))
 
-        file_path = f"Dados/A14.xls"
-        os.makedirs("Dados", exist_ok=True)
+            page.get_by_role("link", name="???tabstd???").hover()
         
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        
-        download.save_as(file_path)
-
-        Process_A14_options(file_path,q)
-
-        q.put(("status", f"Relatório A14 salvo como: {file_path}"))
-        q.put(("status", "Downloads concluídos."))
-        q.put(("progress", 65))
-
-
-
-
-
-# def download_por_modelo(page,url_oss,q,username,password,Modelos) :
-#     page.goto(url_oss, timeout= 600000 );
-#     # 3. Login
-#     q.put(("status", "Realizando login..."))
-#     q.put(("progress", 15))
-
-#     page.locator('[name="USER_NAME"]').fill(username)
-#     page.locator('[name="PASSWORD"]').fill(password)
-#     page.locator(".signin").click()
-#     q.put(("status", "Login realizado com sucesso!"))
-    
-
-#     for key, value in Modelos.items(): 
-#         q.put(("status", f"Processando modelo {key}"))
-#         if key == '611' :    #this line is for us to jump the 611 models and its report is failling causing crash, i could just add try andf catch to prevent crash.
-#             continue
-
-#         page.locator(".shellInstance").click()
-#         print(key,value)
-
-#         page.locator("#sequencer_ui_instances").select_option(value)
-#         page.get_by_role("link", name="Editor de programação").click(timeout=500000)
-
-#         q.put(("status", "Aguardando carregar pagina de relatório do modelo {key}"))
-
-#         # page.pause()
-#         page.locator("iframe[name=\"appFrame\"]").content_frame.get_by_text("Your browser does not support").content_frame.locator("#actionMenu").click(timeout = 1000000)
-        
-        
-#         with page.expect_download() as download_info:
-#             page.locator("iframe[name=\"appFrame\"]").content_frame.get_by_text("Your browser does not support").content_frame.get_by_text("Baixar CSV").click(timeout = 1000000)
-#         q.put(("status", "Inicializando download do modelo {key}"))
-#         download = download_info.value
-
-#         q.put(("status", "Download realizado com sucesso do modelo {key}"))
-#         file_path = f"Dados/{key}.csv"
-#         os.makedirs("Dados", exist_ok=True)
-        
-#         if os.path.exists(file_path):
-#             os.remove(file_path)
-        
-#         download.save_as(file_path)
-#         q.put(("status", f"Relatório {key} salvo como: {file_path}"))
-
-#     page.pause()
-
-
-
-
-
-
-def download_por_modelo(page, url_oss, q, username, password, Modelos):
-    page.goto(url_oss, timeout=600000)
-    q.put(("status", "Realizando login..."))
-    q.put(("progress", 15))
-
-    page.locator('[name="USER_NAME"]').fill(username)
-    page.locator('[name="PASSWORD"]').fill(password)
-    page.locator(".signin").click()
-    q.put(("status", "Login realizado com sucesso!"))
-
-    for key, value in Modelos.items():
-        q.put(("status", f"Processando modelo {key}"))
-
-        # Skip known failing model
-        if key == '611':
-            continue
-
-        page.locator(".shellInstance").click()
-        print(key, value)
-
-        page.locator("#sequencer_ui_instances").select_option(value)
-        page.get_by_role("link", name="Editor de programação").click(timeout=500000)
-
-        q.put(("status", f"Aguardando carregar página de relatório do modelo {key}"))
-
-        frame = page.locator("iframe[name=\"appFrame\"]").content_frame
-        frame.get_by_text("Your browser does not support").content_frame.locator("#actionMenu").click(timeout=1000000)
-
-        with page.expect_download() as download_info:
-            frame.get_by_text("Your browser does not support").content_frame.get_by_text("Baixar CSV").click(timeout=1000000)
-        q.put(("status", f"Inicializando download do modelo {key}"))
-        download = download_info.value
-
-        os.makedirs("Dados", exist_ok=True)
-        csv_path = f"Dados/{key}.csv"
-        xlsx_path = f"Dados/{key}.xlsx"
-
-        # Clean old files
-        for path in [csv_path, xlsx_path]:
-            if os.path.exists(path):
-                os.remove(path)
-
-        download.save_as(csv_path)
-        q.put(("status", f"Relatório {key} salvo como: {csv_path}"))
-
-        # ✅ Convert to Excel only for rows where order_type == 'PREV'
-        try:
-            df = pd.read_csv(csv_path, low_memory=False)
+            page.locator("li.ui-menuitem >> text=Download Table").click(timeout=200000)
+            page.locator("[id=\"filter:codtab_label\"]").click()
+            page.locator("[id=\"filter:codtab_panel\"]").get_by_text("???tabA14???").click()
             
-            if "order_type" in df.columns:
-                df_prev = df[df["order_type"] == "PRE"]
+            with page.expect_download() as download_info:
+                page.get_by_role("button", name="Downloads").click()
+            
+            download = download_info.value
 
-                if not df_prev.empty:
-                    df_prev.to_excel(xlsx_path, index=False, engine="xlsxwriter")
-                    q.put(("status", f"Arquivo Excel criado com {len(df_prev)} linhas: {xlsx_path}"))
-                else:
-                    q.put(("status", f"Nenhuma linha com order_type='PREV' no modelo {key}, conversão ignorada."))
-            else:
-                q.put(("status", f"Coluna 'order_type' não encontrada no modelo {key}, conversão ignorada."))
+            file_path = f"Dados/A14.xls"
+            os.makedirs("Dados", exist_ok=True)
+            
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            
+            download.save_as(file_path)
+
+            Process_A14_options(file_path,q)
+
+            q.put(("status", f"Relatório A14 salvo como: {file_path}"))
+            q.put(("status", "Downloads concluídos."))
+            q.put(("progress", 65))
         except Exception as e:
-            q.put(("status", f"Erro ao converter {key} para Excel: {e}"))
+            q.put(("status", f"ERROR ao processar o arquivo A14: {e}"))
+        finally:
+            pass
 
 
-# def check_file(q) :
-#     xlsx_path = "Dados/341.xlsx"
-   
-#     try:
-#         df = pd.read_csv("Dados/341.csv", low_memory=False)
-#         print(df["order_type"].unique()[:2000])
-        
-#         if "order_type" in df.columns:
-#             df_prev = df[df["order_type"] == "PRE"]
 
-#             if not df_prev.empty:
-#                 df_prev.to_excel(xlsx_path, index=False, engine="xlsxwriter")
-#                 q.put(("status", f"Arquivo Excel criado com {len(df_prev)} linhas: {xlsx_path}"))
-#             else:
-#                 q.put(("status", f"Nenhuma linha com order_type='PREV' no modelo , conversão ignorada."))
-#         else:
-#             q.put(("status", f"Coluna 'order_type' não encontrada no modelo , conversão ignorada."))
-#     except Exception as e:
-#         q.put(("status", f"Erro ao converter para Excel: {e}"))
+
+def download_por_modelo(url_oss, q, username, password, Modelos, chromium_path):
+    """This function is the 'thread manager'. It creates and starts a thread for each model."""
+    threads = []
+    
+    for key, value in Modelos.items():
+        if key == '611':
+            q.put(("status", "Skipping known failing model 611."))
+            continue
+            
+        thread = threading.Thread(
+            target=process_single_model,
+            # ARGS TUPLE IS NOW CORRECT: No browser, but chromium_path is added at the end
+            args=(url_oss, q, username, password, key, value, chromium_path)
+        )
+        threads.append(thread)
+        thread.start()
+        q.put(("status", f"Manager: Started thread for model {key}."))
+
+    # Wait for all model-processing threads to complete
+    for thread in threads:
+        thread.join()
+
+    q.put(("status", "Manager: All model processing threads have finished."))
+
+
+def process_single_model(url_oss: str, q: queue.Queue, username: str, password: str, key: str, value: str, chromium_path: str):
+    """
+    Processes a single model.
+    This function is now COMPLETELY independent and thread-safe.
+    """
+    # Each thread now creates its own Playwright instance and browser.
+    with sync_playwright() as p:
+        browser = None
+        try:
+            browser = p.chromium.launch(
+                headless=False, # Always headless for worker threads
+                executable_path=chromium_path,
+                # args=["--start-maximized"]
+            )
+            context = browser.new_context(viewport={'width': 1920, 'height': 1080})
+            page = context.new_page()
+
+            q.put(("status", f"Model {key}: Thread starting..."))
+            page.goto(url_oss, timeout=60000)
+
+            page.locator('[name="USER_NAME"]').fill(username)
+            page.locator('[name="PASSWORD"]').fill(password)
+            page.locator(".signin").click()
+
+            page.locator(".shellInstance").click()
+            page.locator("#sequencer_ui_instances").select_option(value)
+            page.get_by_role("link", name="Editor de programação").click(timeout=120000)
+
+            q.put(("status", f"Model {key}: Waiting for report page..."))
+
+            frame = page.locator("iframe[name=\"appFrame\"]").content_frame
+            inner_frame = frame.get_by_text("Your browser does not support").content_frame
+            
+            inner_frame.locator("#actionMenu").click(timeout=120000)
+
+            with page.expect_download(timeout=120000) as download_info:
+                inner_frame.get_by_text("Baixar CSV").click()
+            
+            download = download_info.value
+            q.put(("status", f"Model {key}: Download initiated."))
+
+            os.makedirs("Dados", exist_ok=True)
+            csv_path = os.path.join("Dados", f"{key}.csv")
+            xlsx_path = os.path.join("Dados", f"{key}.xlsx")
+
+            if os.path.exists(csv_path): os.remove(csv_path)
+            if os.path.exists(xlsx_path): os.remove(xlsx_path)
+
+            # download.save_as(csv_path)
+            temp_csv_path =download.path()
+            q.put(("status", f"Model {key}: Saved to {csv_path}"))
+            
+            df = pd.read_csv(temp_csv_path, low_memory=False)
+            if "order_type" in df.columns and not df[df["order_type"] == "PRE"].empty:
+                df_prev =df[df["order_type"] == "PRE"]
+                df_prev.to_excel(xlsx_path, index=False, engine="xlsxwriter")
+
+                q.put(("status", f"Model {key}: Excel created at {xlsx_path}"))
+
+                q.put(("status", f"Atualizando planilha Base para o Modelo {key}"))
+                Atualizar_Base_previsao(df_prev, key, q)
+                q.put(("status", f"Planilha Base do Modelo {key}: Atualizado com sucesso "))
+            
+            q.put(("status", f"Model {key}: Finished successfully."))
+
+        except Exception as e:
+            q.put(("status", f"ERROR in model thread {key}: {e}"))
+        finally:
+            # The 'with sync_playwright()' block handles all cleanup automatically.
+            # No need to manually close the browser here.
+            pass
+
+# In Tasks.py, add this new function
+import os
+import sys
+import xlwings as xw
+import pandas as pd
+
+def Atualizar_Base_previsao(df_to_paste, model_key, q):
+    """
+    Finds the correct 'BASE' file, clears it, pastes the data (without the header),
+    copies formatting from the second row, and autofills formulas.
+    """
+    q.put(("status", f"Model {model_key}: Procurando arquivo BASE para atualizar..."))
+    
+    try:
+        # Step 1: Find the target file in the 'Bases' subfolder
+        base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
+        bases_folder = os.path.join(base_path, "Bases")
+
+        if not os.path.exists(bases_folder):
+            q.put(("status", f"Model {model_key}: ERRO - Pasta 'Bases' não encontrada."))
+            return
+
+        target_file_path = None
+        target_filename = None
+        for filename in os.listdir(bases_folder):
+            if (filename.upper().startswith('BASE') and 
+                model_key in filename and 
+                not filename.startswith("~")):
+                
+                target_file_path = os.path.join(bases_folder, filename)
+                target_filename = filename
+                break
+
+        if not target_file_path:
+            q.put(("status", f"Model {model_key}: ERRO - Nenhum arquivo BASE encontrado para este modelo."))
+            return
+            
+        q.put(("status", f"Model {model_key}: Arquivo encontrado: {target_filename}"))
+
+        # Use a new app instance for each thread to ensure stability
+        with xw.App(visible=False) as app:
+            wb = app.books.open(target_file_path)
+            try:
+                ws = wb.sheets['ARQUIVO PREVISÕES']
+                
+                # --- NEW LOGIC START ---
+
+                # Prepare the data: Remove only the first row (the header).
+                df_data_only = df_to_paste.iloc[1:]
+
+                # Always clear the old data content first.
+                ws.range('B2:Y1048576').clear_contents()
+
+                # Proceed only if there is data left after removing the header.
+                if not df_data_only.empty:
+                    # 1. PASTE NEW DATA
+                    start_cell = ws.range('B2')
+                    start_cell.options(header=False, index=False).value = df_data_only
+                    q.put(("status", f"Model {model_key}: Dados colados com sucesso em '{target_filename}'."))
+
+                    # Get the full range of the data we just pasted.
+                    pasted_range = start_cell.expand('table')
+
+                    # 2. APPLY FORMATTING
+                    # If more than one row was pasted, copy the format from the first new row to the rest.
+                    if pasted_range.rows.count > 1:
+                        # The source of the format is the entire first row of our pasted data (Row 2).
+                        format_source_range = pasted_range.rows[0]
+
+                        # The destination is all other pasted rows (Row 3 downwards).
+                        format_destination_range = ws.range(pasted_range.rows[1], pasted_range.rows[-1])
+                        
+                        # Copy and paste_special to apply only the formats.
+                        format_source_range.copy()
+                        format_destination_range.paste(paste='formats')
+                        app.api.CutCopyMode = False # Clear the clipboard to prevent Excel warnings
+                        q.put(("status", f"Model {model_key}: Formato aplicado em {pasted_range.rows.count - 1} linhas."))
+
+                    # 3. AUTOFILL FORMULAS
+                    last_row = pasted_range.last_cell.row
+                    
+                    # !!! ACTION REQUIRED !!!
+                    # Change the column letters below to your actual formula columns.
+                    formula_columns = ['Z', 'AA', 'AB'] # <-- EDIT THESE COLUMNS
+
+                    for col in formula_columns:
+                        formula_source_range = ws.range(f'{col}2')
+                        formula_fill_range = ws.range(f'{col}2:{col}{last_row}')
+                        
+                        # Use autofill to drag down the formulas from row 2.
+                        formula_source_range.autofill(destination=formula_fill_range)
+
+                    q.put(("status", f"Model {model_key}: Fórmulas preenchidas até a linha {last_row}."))
+
+                else:
+                    # If there's no data after removing the header, log a warning.
+                    q.put(("status", f"Model {model_key}: AVISO - Sem dados para colar. Planilha '{target_filename}' foi limpa."))
+                
+                # --- NEW LOGIC END ---
+
+                wb.save()
+            except Exception as sheet_error:
+                q.put(("status", f"Model {model_key}: ERRO ao processar a planilha em '{target_filename}': {sheet_error}"))
+            finally:
+                wb.close()
+
+    except Exception as e:
+        q.put(("status", f"Model {model_key}: ERRO FATAL em Atualizar_Base_previsao: {e}"))
+
+
+    """
+    Finds the correct 'BASE' file, clears it, and pastes the processed 
+    DataFrame if it contains enough data after slicing.
+    """
+    q.put(("status", f"Model {model_key}: Procurando arquivo BASE para atualizar..."))
+    
+    try:
+        # Step 1: Find the target file in the 'Bases' subfolder
+        base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
+        bases_folder = os.path.join(base_path, "Bases")
+
+        if not os.path.exists(bases_folder):
+            q.put(("status", f"Model {model_key}: ERRO - Pasta 'Bases' não encontrada."))
+            return
+
+        target_file_path = None
+        target_filename = None
+        for filename in os.listdir(bases_folder):
+            if (filename.upper().startswith('BASE') and 
+                model_key in filename and 
+                not filename.startswith("~")):
+                
+                target_file_path = os.path.join(bases_folder, filename)
+                target_filename = filename
+                break
+
+        if not target_file_path:
+            q.put(("status", f"Model {model_key}: ERRO - Nenhum arquivo BASE encontrado para este modelo."))
+            return
+            
+        q.put(("status", f"Model {model_key}: Arquivo encontrado: {target_filename}"))
+
+        with xw.App(visible=False) as app:
+            wb = app.books.open(target_file_path)
+            try:
+                ws = wb.sheets['ARQUIVO PREVISÕES']
+                
+                # --- MODIFIED SECTION START ---
+
+                # Always clear the old data first.
+                ws.range('B2').expand().clear_contents()
+
+                # Check if the DataFrame has more than 1 row AND more than 1 column.
+                if df_to_paste.shape[0] > 1 and df_to_paste.shape[1] > 1:
+                    # If so, slice to remove the first row and first column.
+                    df_final_to_paste = df_to_paste.iloc[1:, 1:]
+                    
+                    # Paste the processed data.
+                    ws.range('B2').options(header=False, index=False).value = df_final_to_paste
+                    q.put(("status", f"Model {model_key}: Base '{target_filename}' atualizada com sucesso."))
+                
+                else:
+                    # If the DataFrame is too small, there's nothing to paste after slicing.
+                    q.put(("status", f"Model {model_key}: AVISO - Dados de origem insuficientes. Planilha '{target_filename}' foi limpa."))
+
+                # --- MODIFIED SECTION END ---
+                
+                wb.save()
+            except Exception as sheet_error:
+                q.put(("status", f"Model {model_key}: ERRO ao processar a planilha em '{target_filename}': {sheet_error}"))
+            finally:
+                wb.close()
+
+    except Exception as e:
+        q.put(("status", f"Model {model_key}: ERRO FATAL em Atualizar_Base_previsao: {e}"))
+    """
+    Finds the correct 'BASE' file for a given model and pastes the provided DataFrame into it.
+    """
+    q.put(("status", f"Model {model_key}: Procurando arquivo BASE para atualizar..."))
+    
+    try:
+        # Step 1: Find the target file in the 'Bases' subfolder
+        base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
+        bases_folder = os.path.join(base_path, "Bases")
+
+        if not os.path.exists(bases_folder):
+            q.put(("status", f"Model {model_key}: ERRO - Pasta 'Bases' não encontrada."))
+            return
+
+        target_file_path = None
+        target_filename = None
+        for filename in os.listdir(bases_folder):
+            # Find a file that starts with 'BASE' and contains the model number
+            if (filename.upper().startswith('BASE') and 
+                model_key in filename and 
+                not filename.startswith("~")):
+                
+                target_file_path = os.path.join(bases_folder, filename)
+                target_filename = filename
+                break # Stop after finding the first match
+
+        if not target_file_path:
+            q.put(("status", f"Model {model_key}: ERRO - Nenhum arquivo BASE encontrado para este modelo."))
+            return
+            
+        q.put(("status", f"Model {model_key}: Arquivo encontrado: {target_filename}"))
+
+        # Step 2: Open the file with xlwings and paste the data
+        # Use a new app instance for each thread to ensure stability
+        with xw.App(visible=False) as app:
+            wb = app.books.open(target_file_path)
+            try:
+                ws = wb.sheets['ARQUIVO PREVISÕES']
+                
+                # Clear old data and paste new data starting at B2
+                # This automatically includes the header
+                ws.range('B2:Y10000000000').expand().clear_contents()
+                ws.range('B2').value = df_to_paste[1:,]
+                
+                wb.save()
+                q.put(("status", f"Model {model_key}: Base '{target_filename}' atualizada com sucesso."))
+            except Exception as sheet_error:
+                q.put(("status", f"Model {model_key}: ERRO ao processar a planilha em '{target_filename}': {sheet_error}"))
+            finally:
+                wb.close()
+
+    except Exception as e:
+        q.put(("status", f"Model {model_key}: ERRO FATAL em Atualizar_Base_previsao: {e}"))

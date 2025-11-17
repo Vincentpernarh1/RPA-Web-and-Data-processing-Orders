@@ -5,50 +5,42 @@ import queue
 import tkinter as tk
 from tkinter import ttk, scrolledtext
 from datetime import datetime
-import pandas as pd
-from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter
-from playwright.sync_api import sync_playwright, Playwright, TimeoutError
+import sys
 import warnings
-import pyxlsb
-import csv
-import xlwings as xw
 
-
-from Tasks import Process_A14_options 
-
-from Tasks import download_A14
+# --- Import your custom task functions ---
+# Make sure your Tasks.py file is in the same folder
 from Tasks import download_por_modelo
-# from Tasks import  check_file
+from Tasks import download_A14  # Kept for future use
+
 
 warnings.filterwarnings("ignore", category=UserWarning)
-import sys
+
+# --- HELPER FUNCTIONS (UNCHANGED) ---
 
 def get_playwright_browser_path():
+    """Determines the path to the Playwright Chromium executable."""
     if getattr(sys, 'frozen', False):
+        # Path when running as a bundled executable (e.g., PyInstaller)
         base_path = sys._MEIPASS
-        chromium_path = os.path.join(base_path, "ms-playwright", "chromium-1187", "chrome-win", "chrome.exe")
     else:
-        base_path = r"C:\Users\perna\AppData\Local"
+        # Path when running as a .py script
+        base_path = os.path.expanduser(r"~\AppData\Local")
 
-        # Join the rest of the Playwright folder path
-        chromium_path = os.path.join(
-            base_path,
-            "ms-playwright",
-            "chromium-1187",
-            "chrome-win",
-            "chrome.exe"
-        )
-   
-    if chromium_path and not os.path.exists(chromium_path):
-        raise FileNotFoundError(f"Chromium executable not found at {chromium_path}")
-
+    chromium_path = os.path.join(
+        base_path, "ms-playwright", "chromium-1187", "chrome-win", "chrome.exe"
+    )
+    
+    if not os.path.exists(chromium_path):
+        # Fallback if the specific version is not found, letting Playwright decide.
+        # This makes the script more robust to Playwright updates.
+        return None
+    
     return chromium_path
 
 
-# --- GUI UPDATE FUNCTION ---
-def update_gui(queue_instance, status_label, progress_bar, log_text):
-    """Checks the queue for messages from the worker thread and updates the GUI."""
+def update_gui(queue_instance, status_label, progress_bar, log_text, root):
+    """Checks the queue for messages and updates the GUI."""
     try:
         while True:
             message_type, value = queue_instance.get_nowait()
@@ -61,118 +53,102 @@ def update_gui(queue_instance, status_label, progress_bar, log_text):
             elif message_type == "done":
                 status_label.config(text="Processo Concluído!")
                 progress_bar['value'] = 100
-                return # Stop checking
+                # Re-enable the button when done
+                root.nametowidget("main_frame.process_button").config(state="normal")
+                return # Stop the polling loop
     except queue.Empty:
         pass
-    status_label.after(100, lambda: update_gui(queue_instance, status_label, progress_bar, log_text))
+    
+    # Continue polling
+    root.after(100, lambda: update_gui(queue_instance, status_label, progress_bar, log_text, root))
 
 
 def load_credentials():
-    """Loads Credencial.json from the same directory as the running script or executable."""
+    """Loads credencial.json from the script's directory."""
     base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
     cred_path = os.path.join(base_path, "credencial.json")
-
     if not os.path.exists(cred_path):
-        raise FileNotFoundError(f"Credencial.json not found in: {cred_path}")
-
+        raise FileNotFoundError(f"credencial.json not found in: {cred_path}")
     with open(cred_path, "r", encoding="utf-8") as f:
         return json.load(f)
-    
+
 
 def load_modelos():
-    """Loads Credencial.json from the same directory as the running script or executable."""
+    """Loads Modelos.json from the script's directory."""
     base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
-    Model_path = os.path.join(base_path, "Modelos.json")
-
-    if not os.path.exists(Model_path):
-        raise FileNotFoundError(f"Credencial.json not found in: {Model_path}")
-
-    with open(Model_path, "r", encoding="utf-8") as f:
+    model_path = os.path.join(base_path, "Modelos.json")
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Modelos.json not found in: {model_path}")
+    with open(model_path, "r", encoding="utf-8") as f:
         return json.load(f)
-    
 
+# --- CORRECTED MAIN AUTOMATION LOGIC ---
 
-
-
-    
-def run_automation(playwright: Playwright, q: queue.Queue):
-    ecr_path, odm_path = None, None
-    
+def main_process(q: queue.Queue):
+    """
+    This is the main function targeted by the GUI thread.
+    It orchestrates the automation tasks in a thread-safe way.
+    """
     try:
-        # 1. Load Credentials
         q.put(("status", "Carregando credenciais..."))
         q.put(("progress", 5))
         credentials = load_credentials()
-        url_order, username, password ,url_oss= credentials['url_order'], credentials['user'], credentials['password'],credentials['url_oss']
-        # check_file(q)
-        # 2. Launch Browser
-        q.put(("status", "Iniciando navegador..."))
-
+        url_order, username, password, url_oss = credentials['url_order'], credentials['user'], credentials['password'], credentials['url_oss']
+        
+        modelos_to_process = load_modelos()
+       
+        
+        # Data validation check
+        if not isinstance(modelos_to_process, dict):
+            error_msg = "ERRO: O arquivo Modelos.json não é um dicionário válido."
+            q.put(("status", error_msg))
+            raise TypeError(error_msg)
+            
         chromium_path = get_playwright_browser_path()
         
-        if chromium_path:
-            # .exe → use bundled Chromium
-            browser = playwright.chromium.launch(
-                headless=False,
-                executable_path=chromium_path,
-                args=["--start-maximized"]
-            )
-        else:
-            # .py → use default Playwright Chromium
-            browser = playwright.chromium.launch(
-                headless=True,
-                args=["--start-maximized"]
-            )
-                    
-        # context = browser.new_context(viewport={'width': 1920, 'height': 1080})
-        context = browser.new_context(no_viewport=True)
-        page = context.new_page()
+        q.put(("status", "Iniciando download dos arquivos..."))
 
-        # download_A14(page,url_order,q,username,password)
-        # download_por_modelo(page,url_oss,q,username,password,Modelos=load_modelos())
+        # Create and start the manager thread for downloading models.
+        model_thread = threading.Thread(
+            target=download_por_modelo, 
+            args=(url_oss, q, username, password, modelos_to_process, chromium_path)
+        )
+        
+
+        # For example:
+        a14_thread = threading.Thread(target=download_A14,  
+                args=(url_order, q, username, password, chromium_path)
+                )
         
 
 
+        # Inicializando os threads
+        a14_thread.start()
+        model_thread.start()
+        
+        # Wait for all threads to finish
+        model_thread.join()
+        a14_thread.join()
 
+        q.put(("status", "Processo de automação finalizado."))
 
-       
-
-    except FileNotFoundError:
-        q.put(("status", "Erro: 'Credencial.json' não encontrado."))
-    except KeyError:
-        q.put(("status", "Erro: JSON de credenciais inválido."))
-    except TimeoutError:
-        q.put(("status", "Erro de Timeout: Verifique os seletores ou a conexão."))
-        page.screenshot(path="login_error.png")
+    except (FileNotFoundError, KeyError, TypeError) as e:
+        q.put(("status", f"ERRO CRÍTICO: {e}"))
     except Exception as e:
         q.put(("status", f"Ocorreu um erro inesperado: {e}"))
     finally:
-        # 5. Clean Up and next step
-        q.put(("status", "Fechando navegador..."))
-        if 'context' in locals(): context.close()
-        if 'browser' in locals(): browser.close()
-        
-        
-
         q.put(("done", True))
 
+# --- TKINTER APP SETUP (UNCHANGED) ---
 
-
-def main_process(q: queue.Queue):
-    with sync_playwright() as playwright:
-        run_automation(playwright, q)
-
-# --- TKINTER APP SETUP ---
 class App:
     def __init__(self, root):
         self.root = root
         self.root.title("Ferramenta de Automação e Processamento")
         self.root.geometry("600x400")
-
         self.queue = queue.Queue()
 
-        # --- Widgets ---
-        main_frame = ttk.Frame(root, padding="10")
+        main_frame = ttk.Frame(root, padding="10", name="main_frame")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
         self.status_label = ttk.Label(main_frame, text="Pronto para iniciar. Clique em 'Processar'.", font=("Helvetica", 12))
@@ -181,7 +157,7 @@ class App:
         self.progress_bar = ttk.Progressbar(main_frame, orient='horizontal', length=400, mode='determinate')
         self.progress_bar.pack(pady=10, padx=5, fill=tk.X)
 
-        self.process_button = ttk.Button(main_frame, text="Processar", command=self.start_processing_thread)
+        self.process_button = ttk.Button(main_frame, text="Processar", command=self.start_processing_thread, name="process_button")
         self.process_button.pack(pady=10)
         
         log_frame = ttk.LabelFrame(main_frame, text="Log de Atividades", padding="10")
@@ -200,8 +176,7 @@ class App:
         self.thread.daemon = True
         self.thread.start()
         
-        # Start checking the queue for updates
-        update_gui(self.queue, self.status_label, self.progress_bar, self.log_text)
+        update_gui(self.queue, self.status_label, self.progress_bar, self.log_text, self.root)
 
 if __name__ == "__main__":
     root = tk.Tk()
