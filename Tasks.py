@@ -26,11 +26,11 @@ def Process_A14_options(file_path, q):
     try:
         ext = os.path.splitext(file_path)[1].lower()
         if ext in [".xlsx", ".xlsm"]:
-            df = pd.read_excel(file_path, engine="openpyxl")
+            df = pd.read_excel(file_path, engine="openpyxl", dtype=object)
         elif ext == ".xls":
-            df = pd.read_excel(file_path, engine="xlrd")
+            df = pd.read_excel(file_path, engine="xlrd", dtype=object)
         elif ext == ".xlsb":
-            df = pd.read_excel(file_path, engine="pyxlsb")
+            df = pd.read_excel(file_path, engine="pyxlsb", dtype=object)
         elif ext == ".csv":
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 sample = f.read(4096)
@@ -40,9 +40,9 @@ def Process_A14_options(file_path, q):
                 except csv.Error:
                     delimiter = ";" if ";" in sample else ","
             try:
-                df = pd.read_csv(file_path, delimiter=delimiter, encoding="utf-8", engine="python")
+                df = pd.read_csv(file_path, delimiter=delimiter, encoding="utf-8", engine="python", dtype=object)
             except Exception:
-                df = pd.read_csv(file_path, delimiter=delimiter, encoding="latin-1", engine="python")
+                df = pd.read_csv(file_path, delimiter=delimiter, encoding="latin-1", engine="python", dtype=object)
         else:
             q.put(("status", f"❌ Formato de arquivo não suportado: {ext}"))
             return
@@ -84,8 +84,13 @@ def Process_A14_options(file_path, q):
     processed_data = []
     for _, row in df_pkg.iterrows():
         # Step 3: Get the PACK value from the first optional column
+        # Preserve exact string representation - no conversion whatsoever
         pack_value = row[pack_col_name]
-        pack = str(pack_value).strip() if pd.notna(pack_value) else ""
+        if pd.notna(pack_value):
+            # Convert to string but preserve the original representation
+            pack = str(pack_value).strip() if str(pack_value).strip().lower() != 'nan' else ""
+        else:
+            pack = ""
         
         # Step 4: Get and join all CONTEÚDO values from the other optional columns
         conteudo_values = []
@@ -93,7 +98,8 @@ def Process_A14_options(file_path, q):
             value = row[col]
             if pd.notna(value):
                 str_value = str(value).strip()
-                if str_value:
+                # Exclude NaN strings
+                if str_value and str_value.lower() != 'nan':
                     conteudo_values.append(str_value)
         
         conteudo = "*" + "*".join(conteudo_values) + "*" if conteudo_values else ""
@@ -119,24 +125,35 @@ def Process_A14_options(file_path, q):
             file_full_path = os.path.join(Base_folder, filename)
             q.put(("status", f"📁 Atualizando arquivo: {filename}"))
             try:
-                wb = xw.Book(file_full_path)
+                app = xw.App(visible=True, add_book=False)
+                app.display_alerts = False
+                app.screen_updating = True
+
+                wb = app.books.open(file_full_path, update_links=False)
                 if 'A14' in [s.name for s in wb.sheets]:
                     ws = wb.sheets['A14']
                 else:
                     ws = wb.sheets.add('A14')
                 ws.clear_contents()
+                
+                # Write headers
                 ws.range('A1').value = ['PACK', 'CONTEÚDO']
+                
+                # Format columns as text to preserve string format
+                ws.range('A:B').number_format = '@'
+                
+                # Write data
                 ws.range('A2').value = df_result.values.tolist()
+                
                 ws.autofit()
                 wb.save()
                 wb.close()
+                # app.quit()
                 q.put(("status", f"✅ Planilha 'A14' atualizada em {filename}"))
             except Exception as e:
                 q.put(("status", f"❌ Falha ao processar {filename}: {e}"))
 
     q.put(("status", "🎉 Processamento concluído com sucesso."))
-
-
 
 
 def download_A14(url_order,q,username,password,chromium_path) :
