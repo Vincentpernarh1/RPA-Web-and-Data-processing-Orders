@@ -1,13 +1,16 @@
 import json
 import os
+import sys
 import threading
 import queue
 import tkinter as tk
 from tkinter import ttk, scrolledtext
 from datetime import datetime
+from time import sleep
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
+import playwright
 from playwright.sync_api import sync_playwright, Playwright, TimeoutError
 import warnings
 import pyxlsb
@@ -15,8 +18,9 @@ import csv
 import xlwings as xw
 from playwright.sync_api import Page, Browser
 
+
+
 warnings.filterwarnings("ignore", category=UserWarning)
-import sys
 
 
 def Process_A14_options(file_path, q):
@@ -64,10 +68,6 @@ def Process_A14_options(file_path, q):
         q.put(("status", "⚠️ Nenhuma linha encontrada com CODICE_FAMIGLIA = 'PKG'."))
         return
 
-    # =============================================================================
-    # NEW LOGIC BASED ON YOUR INSTRUCTIONS
-    # =============================================================================
-
     # Step 1: Find all columns with 'CODICE_OPTIONAL' in the name
     optional_cols = [col for col in df_pkg.columns if 'CODICE_OPTIONAL' in col]
     if not optional_cols:
@@ -108,10 +108,6 @@ def Process_A14_options(file_path, q):
 
     df_result = pd.DataFrame(processed_data, columns=['PACK', 'CONTEÚDO'])
     q.put(("status", f"📦 {len(df_result)} registros prontos para atualização."))
-
-    # =============================================================================
-    # The file writing logic below is correct and remains unchanged.
-    # =============================================================================
 
     base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
     Base_folder = os.path.join(base_path, "Bases")
@@ -202,56 +198,124 @@ def download_A14(url_order,q,username,password,chromium_path) :
             q.put(("status", "Downloads concluídos."))
             q.put(("progress", 65))
         except Exception as e:
-            q.put(("status", f"ERROR ao processar o arquivo A14: {e}"))
+            q.put(("status", f"ERRO ao processar o arquivo A14: {e}"))
         finally:
             pass
-
-
 
 
 def download_por_modelo(url_oss, q, username, password, Modelos, chromium_path):
     """This function is the 'thread manager'. It creates and starts a thread for each model."""
     threads = []
+    app_griglia = None
+    wb_griglia = None
+    data_source_link = None
     
-    for key, value in Modelos.items():
-        if key == '611':
-            q.put(("status", "Skipping known failing model 611."))
-            continue
-            
-        thread = threading.Thread(
-            target=process_single_model,
-            # ARGS TUPLE IS NOW CORRECT: No browser, but chromium_path is added at the end
-            args=(url_oss, q, username, password, key, value, chromium_path)
-        )
-        threads.append(thread)
-        thread.start()
-        q.put(("status", f"Manager: Started thread for model {key}."))
+    try:
+        # Open GRIGLIA OPCIONAIS once at the start
+        base_path = os.getcwd()
+        bases_folder = os.path.join(base_path, "Bases")
+        
+        if not os.path.exists(bases_folder):
+            q.put(("status", "ERRO - Pasta 'Bases' não encontrada."))
+            return
+        
+        # Find GRIGLIA OPCIONAIS file
+        griglia_file = None
+        for filename in os.listdir(bases_folder):
+            if 'GRIGLIA OPCIONAIS' in filename.upper() and not filename.startswith("~"):
+                griglia_file = filename
+                break
+        
+        if not griglia_file:
+            q.put(("status", "ERRO - Arquivo GRIGLIA OPCIONAIS não encontrado."))
+            return
+        
+        griglia_path = os.path.join(bases_folder, griglia_file)
+        q.put(("status", f"Gerenciador: Abrindo arquivo GRIGLIA OPCIONAIS: {griglia_file}"))
+        
+        # Create Excel app and open GRIGLIA file ONCE
+        app_griglia = xw.App(visible=True, add_book=False)
+        app_griglia.display_alerts = False
+        wb_griglia = app_griglia.books.open(griglia_path, update_links=False)
+        
+        # Create the dynamic link to GRIGLIA OPCIONAIS BANCO sheet
+        # Use full absolute path for cross-workbook reference
+        data_source_link = f"'{griglia_path}'!BANCO!$A$1:$Q$3207"
+        q.put(("status", f"Gerenciador: GRIGLIA aberto. Link de dados: {data_source_link}"))
+        
+        # Start all model threads
+        for key, value in Modelos.items():
+            if key == '611':
+                q.put(("status", "Pulando modelo 611 com falha conhecida."))
+                continue
+                
+            thread = threading.Thread(
+                target=process_single_model,
+                args=(url_oss, q, username, password, key, value, chromium_path, data_source_link)
+            )
+            threads.append(thread)
+            thread.start()
+            q.put(("status", f"Gerenciador: Thread iniciada para o modelo {key}."))
 
-    # Wait for all model-processing threads to complete
-    for thread in threads:
-        thread.join()
+        # Wait for all model-processing threads to complete
+        for thread in threads:
+            thread.join()
 
-    q.put(("status", "Manager: All model processing threads have finished."))
+        q.put(("status", "Gerenciador: Todas as threads de processamento de modelos foram concluídas."))
+        
+    finally:
+        # Close GRIGLIA and Excel app at the end
+        if wb_griglia:
+            wb_griglia.close()
+            q.put(("status", "Gerenciador: Arquivo GRIGLIA OPCIONAIS fechado."))
+        if app_griglia:
+            app_griglia.quit()
+            q.put(("status", "Gerenciador: Excel finalizado."))
 
-
-def process_single_model(url_oss: str, q: queue.Queue, username: str, password: str, key: str, value: str, chromium_path: str):
+def process_single_model(url_oss: str, q: queue.Queue, username: str, password: str, key: str, value: str, chromium_path: str, data_source_link: str):
     """
     Processes a single model.
     This function is now COMPLETELY independent and thread-safe.
+    Each thread downloads, updates BASE, and updates pivot tables using the shared GRIGLIA link.
     """
     # Each thread now creates its own Playwright instance and browser.
     with sync_playwright() as p:
         browser = None
         try:
-            browser = p.chromium.launch(
-                headless=False, # Always headless for worker threads
+            
+            if chromium_path:
+                browser = p.chromium.launch(
+                headless=False,
                 executable_path=chromium_path,
-                # args=["--start-maximized"]
+                args=[
+                    "--start-maximized",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-infobars",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                ]
+                    )
+                
+            else : 
+                browser = p.chromium.launch(
+                    headless=False,
+                    args=[
+                        "--start-maximized",
+                        "--disable-blink-features=AutomationControlled",
+                        "--disable-infobars",
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                    ],
+                )
+            
+            context = browser.new_context(
+                no_viewport=True,  # Use full browser window size
             )
-            context = browser.new_context(viewport={'width': 1920, 'height': 1080})
+            
+            
             page = context.new_page()
 
-            q.put(("status", f"Model {key}: Thread starting..."))
+            q.put(("status", f"Modelo {key}: Iniciando thread..."))
             page.goto(url_oss, timeout=60000)
 
             page.locator('[name="USER_NAME"]').fill(username)
@@ -262,20 +326,21 @@ def process_single_model(url_oss: str, q: queue.Queue, username: str, password: 
             page.locator("#sequencer_ui_instances").select_option(value)
             page.get_by_role("link", name="Editor de programação").click(timeout=120000)
 
-            q.put(("status", f"Model {key}: Waiting for report page..."))
+            q.put(("status", f"Modelo {key}: Aguardando página de relatório..."))
 
             frame = page.locator("iframe[name=\"appFrame\"]").content_frame
             inner_frame = frame.get_by_text("Your browser does not support").content_frame
             
-            inner_frame.locator("#actionMenu").click(timeout=120000)
+            inner_frame.locator("#actionMenu").click(timeout=220000)
 
             with page.expect_download(timeout=120000) as download_info:
                 inner_frame.get_by_text("Baixar CSV").click()
             
             download = download_info.value
-            q.put(("status", f"Model {key}: Download initiated."))
+            q.put(("status", f"Modelo {key}: Download iniciado."))
 
             os.makedirs("Dados", exist_ok=True)
+            
             csv_path = os.path.join("Dados", f"{key}.csv")
             xlsx_path = os.path.join("Dados", f"{key}.xlsx")
 
@@ -284,40 +349,41 @@ def process_single_model(url_oss: str, q: queue.Queue, username: str, password: 
 
             # download.save_as(csv_path)
             temp_csv_path =download.path()
-            q.put(("status", f"Model {key}: Saved to {csv_path}"))
+            q.put(("status", f"Modelo {key}: Salvo em {csv_path}"))
             
             df = pd.read_csv(temp_csv_path, low_memory=False)
             if "order_type" in df.columns and not df[df["order_type"] == "PRE"].empty:
                 df_prev =df[df["order_type"] == "PRE"]
                 df_prev.to_excel(xlsx_path, index=False, engine="xlsxwriter")
 
-                q.put(("status", f"Model {key}: Excel created at {xlsx_path}"))
+                q.put(("status", f"Modelo {key}: Excel criado em {xlsx_path}"))
 
                 q.put(("status", f"Atualizando planilha Base para o Modelo {key}"))
-                Atualizar_Base_previsao(df_prev, key, q)
+                Atualizar_Base_Modelos(df_prev, key, q)
+                
                 q.put(("status", f"Planilha Base do Modelo {key}: Atualizado com sucesso "))
+                
+                # Update pivot tables using the shared GRIGLIA link
+                q.put(("status", f"Modelo {key}: Atualizando tabelas dinâmicas..."))
+                Atualizar_Links_Pivort_tables_Single_Model(key, data_source_link, q)
             
-            q.put(("status", f"Model {key}: Finished successfully."))
+            q.put(("status", f"Modelo {key}: Processamento completo concluído."))
 
         except Exception as e:
-            q.put(("status", f"ERROR in model thread {key}: {e}"))
+            q.put(("status", f"ERRO na thread do modelo {key}: {e}"))
         finally:
             # The 'with sync_playwright()' block handles all cleanup automatically.
             # No need to manually close the browser here.
             pass
 
-# In Tasks.py, add this new function
-import os
-import sys
-import xlwings as xw
-import pandas as pd
 
-def Atualizar_Base_previsao(df_to_paste, model_key, q):
+
+def Atualizar_Base_Modelos(df_to_paste, model_key, q):
     """
     Finds the correct 'BASE' file, clears it, pastes the data (without the header),
     copies formatting from the second row, and autofills formulas.
     """
-    q.put(("status", f"Model {model_key}: Procurando arquivo BASE para atualizar..."))
+    q.put(("status", f"Modelo {model_key}: Procurando arquivo BASE para atualizar..."))
     
     try:
         # Step 1: Find the target file in the 'Bases' subfolder
@@ -325,7 +391,7 @@ def Atualizar_Base_previsao(df_to_paste, model_key, q):
         bases_folder = os.path.join(base_path, "Bases")
 
         if not os.path.exists(bases_folder):
-            q.put(("status", f"Model {model_key}: ERRO - Pasta 'Bases' não encontrada."))
+            q.put(("status", f"Modelo {model_key}: ERRO - Pasta 'Bases' não encontrada."))
             return
 
         target_file_path = None
@@ -334,203 +400,218 @@ def Atualizar_Base_previsao(df_to_paste, model_key, q):
             if (filename.upper().startswith('BASE') and 
                 model_key in filename and 
                 not filename.startswith("~")):
-                
                 target_file_path = os.path.join(bases_folder, filename)
                 target_filename = filename
                 break
 
         if not target_file_path:
-            q.put(("status", f"Model {model_key}: ERRO - Nenhum arquivo BASE encontrado para este modelo."))
+            q.put(("status", f"Modelo {model_key}: ERRO - Nenhum arquivo BASE encontrado para este modelo."))
             return
             
-        q.put(("status", f"Model {model_key}: Arquivo encontrado: {target_filename}"))
+        q.put(("status", f"Modelo {model_key}: Arquivo encontrado: {target_filename}"))
 
         # Use a new app instance for each thread to ensure stability
-        with xw.App(visible=False) as app:
-            wb = app.books.open(target_file_path)
+        app = xw.App(visible=True, add_book=False)
+        app.display_alerts = False
+        
+        try:
+            q.put(("status", f"Modelo {model_key}: Abrindo arquivo {target_filename}..."))
+            wb = app.books.open(target_file_path, update_links=False)
+            
             try:
-                ws = wb.sheets['ARQUIVO PREVISÕES']
                 
-                # --- NEW LOGIC START ---
-
+                ws = wb.sheets['ARQUIVO PREVISÕES']
+                q.put(("status", f"Modelo {model_key}: Limpando dados antigos da planilha..."))
+                
                 # Prepare the data: Remove only the first row (the header).
                 df_data_only = df_to_paste.iloc[1:]
-
-                # Always clear the old data content first.
-                ws.range('B2:Y1048576').clear_contents()
-
+                
+                # STOP AT AE TO AVOID PIVOT TABLE
+                try:
+                    used_range = ws.range('B3').expand('table')
+                    if used_range.rows.count > 0:
+                        last_used_row = used_range.last_cell.row
+                        ws.range(f'B3:AE{last_used_row}').clear_contents()
+                        print(f"Cleared old data from B3:AE{last_used_row}")
+                except:
+                    # If no data exists, just clear a small range
+                    ws.range('B3:AE1000').clear_contents()
+                                   
                 # Proceed only if there is data left after removing the header.
                 if not df_data_only.empty:
-                    # 1. PASTE NEW DATA
-                    start_cell = ws.range('B2')
-                    start_cell.options(header=False, index=False).value = df_data_only
-                    q.put(("status", f"Model {model_key}: Dados colados com sucesso em '{target_filename}'."))
-
-                    # Get the full range of the data we just pasted.
-                    pasted_range = start_cell.expand('table')
-
-                    # 2. APPLY FORMATTING
-                    # If more than one row was pasted, copy the format from the first new row to the rest.
-                    if pasted_range.rows.count > 1:
-                        # The source of the format is the entire first row of our pasted data (Row 2).
-                        format_source_range = pasted_range.rows[0]
-
-                        # The destination is all other pasted rows (Row 3 downwards).
-                        format_destination_range = ws.range(pasted_range.rows[1], pasted_range.rows[-1])
-                        
-                        # Copy and paste_special to apply only the formats.
-                        format_source_range.copy()
-                        format_destination_range.paste(paste='formats')
-                        app.api.CutCopyMode = False # Clear the clipboard to prevent Excel warnings
-                        q.put(("status", f"Model {model_key}: Formato aplicado em {pasted_range.rows.count - 1} linhas."))
-
-                    # 3. AUTOFILL FORMULAS
-                    last_row = pasted_range.last_cell.row
+                    # Calculate the last row based on data size
+                    num_data_rows = len(df_data_only)
+                    last_row = 2 + num_data_rows  # Row 2 is template, data starts at row 3
+                    print(f"Will fill {num_data_rows} rows, last row will be {last_row}")
                     
-                    # !!! ACTION REQUIRED !!!
-                    # Change the column letters below to your actual formula columns.
-                    formula_columns = ['Z', 'AA', 'AB'] # <-- EDIT THESE COLUMNS
-
-                    for col in formula_columns:
-                        formula_source_range = ws.range(f'{col}2')
-                        formula_fill_range = ws.range(f'{col}2:{col}{last_row}')
-                        
-                        # Use autofill to drag down the formulas from row 2.
-                        formula_source_range.autofill(destination=formula_fill_range)
-
-                    q.put(("status", f"Model {model_key}: Fórmulas preenchidas até a linha {last_row}."))
+                    q.put(("status", f"Modelo {model_key}: Aplicando formatação e fórmulas para {num_data_rows} linhas..."))
+                    
+                    # 1. FIRST: USE AUTOFILL to copy format and formulas from row 2 to all rows
+                    # Select the template row (A2:AE2) - STOP AT AE TO AVOID PIVOT TABLE
+                    template_range = ws.range('A2:AE2')
+                    
+                    # Define the destination range (A2:AE[last_row])
+                    fill_range = ws.range(f'A2:AE{last_row}')
+                    
+                    # Use autofill to copy format and formulas down
+                    print(f"Autofilling format and formulas from row 2 to row {last_row}...")
+                    template_range.autofill(fill_range)
+                    print(f"Autofill completed")
+                    
+                    q.put(("status", f"Modelo {model_key}: Colando dados na planilha..."))
+                    
+                    # 2. THEN: PASTE DATA starting at B3 (this will overwrite the formulas in columns B onwards)
+                    start_cell = ws.range('B3')
+                    
+                    print("Pasting data starting at B3...")
+                    # Paste only the data values
+                    start_cell.options(header=False, index=False).value = df_data_only.values
+                    print(f"Data pasted successfully")
+                    
+                    q.put(("status", f"Modelo {model_key}: Dados colados e formatados em '{target_filename}' ({num_data_rows} linhas)."))
 
                 else:
                     # If there's no data after removing the header, log a warning.
-                    q.put(("status", f"Model {model_key}: AVISO - Sem dados para colar. Planilha '{target_filename}' foi limpa."))
-                
-                # --- NEW LOGIC END ---
-
-                wb.save()
-            except Exception as sheet_error:
-                q.put(("status", f"Model {model_key}: ERRO ao processar a planilha em '{target_filename}': {sheet_error}"))
-            finally:
-                wb.close()
-
-    except Exception as e:
-        q.put(("status", f"Model {model_key}: ERRO FATAL em Atualizar_Base_previsao: {e}"))
-
-
-    """
-    Finds the correct 'BASE' file, clears it, and pastes the processed 
-    DataFrame if it contains enough data after slicing.
-    """
-    q.put(("status", f"Model {model_key}: Procurando arquivo BASE para atualizar..."))
-    
-    try:
-        # Step 1: Find the target file in the 'Bases' subfolder
-        base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
-        bases_folder = os.path.join(base_path, "Bases")
-
-        if not os.path.exists(bases_folder):
-            q.put(("status", f"Model {model_key}: ERRO - Pasta 'Bases' não encontrada."))
-            return
-
-        target_file_path = None
-        target_filename = None
-        for filename in os.listdir(bases_folder):
-            if (filename.upper().startswith('BASE') and 
-                model_key in filename and 
-                not filename.startswith("~")):
-                
-                target_file_path = os.path.join(bases_folder, filename)
-                target_filename = filename
-                break
-
-        if not target_file_path:
-            q.put(("status", f"Model {model_key}: ERRO - Nenhum arquivo BASE encontrado para este modelo."))
-            return
-            
-        q.put(("status", f"Model {model_key}: Arquivo encontrado: {target_filename}"))
-
-        with xw.App(visible=False) as app:
-            wb = app.books.open(target_file_path)
-            try:
-                ws = wb.sheets['ARQUIVO PREVISÕES']
-                
-                # --- MODIFIED SECTION START ---
-
-                # Always clear the old data first.
-                ws.range('B2').expand().clear_contents()
-
-                # Check if the DataFrame has more than 1 row AND more than 1 column.
-                if df_to_paste.shape[0] > 1 and df_to_paste.shape[1] > 1:
-                    # If so, slice to remove the first row and first column.
-                    df_final_to_paste = df_to_paste.iloc[1:, 1:]
+                    q.put(("status", f"Modelo {model_key}: AVISO - Sem dados para colar. Planilha '{target_filename}' foi limpa."))
                     
-                    # Paste the processed data.
-                    ws.range('B2').options(header=False, index=False).value = df_final_to_paste
-                    q.put(("status", f"Model {model_key}: Base '{target_filename}' atualizada com sucesso."))
-                
-                else:
-                    # If the DataFrame is too small, there's nothing to paste after slicing.
-                    q.put(("status", f"Model {model_key}: AVISO - Dados de origem insuficientes. Planilha '{target_filename}' foi limpa."))
-
-                # --- MODIFIED SECTION END ---
-                
+                print("Saving workbook...")
+                q.put(("status", f"Modelo {model_key}: Salvando arquivo {target_filename}..."))
                 wb.save()
+                print("Workbook saved successfully")
             except Exception as sheet_error:
-                q.put(("status", f"Model {model_key}: ERRO ao processar a planilha em '{target_filename}': {sheet_error}"))
+                q.put(("status", f"Modelo {model_key}: ERRO ao processar a planilha em '{target_filename}': {sheet_error}"))
+                raise
             finally:
                 wb.close()
+        finally:
+            app.quit()
 
     except Exception as e:
-        q.put(("status", f"Model {model_key}: ERRO FATAL em Atualizar_Base_previsao: {e}"))
+        q.put(("status", f"Modelo {model_key}: ERRO FATAL em Atualizar_Base_Modelos: {e}"))
+        
+        
+        
+           
+def Atualizar_Links_Pivort_tables_Single_Model(model_key, data_source_link, q):
     """
-    Finds the correct 'BASE' file for a given model and pastes the provided DataFrame into it.
+    Updates pivot table data sources for a single model.
+    Uses the pre-opened GRIGLIA OPCIONAIS file link.
+    This function runs in each model's thread independently.
     """
-    q.put(("status", f"Model {model_key}: Procurando arquivo BASE para atualizar..."))
-    
     try:
-        # Step 1: Find the target file in the 'Bases' subfolder
-        base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
+        # Get base paths
+        base_path = os.getcwd()
         bases_folder = os.path.join(base_path, "Bases")
-
+        
         if not os.path.exists(bases_folder):
-            q.put(("status", f"Model {model_key}: ERRO - Pasta 'Bases' não encontrada."))
+            q.put(("status", f"Modelo {model_key}: ERRO - Pasta 'Bases' não encontrada."))
             return
-
-        target_file_path = None
-        target_filename = None
+        
+        # Find BASE file for this model
+        base_file = None
         for filename in os.listdir(bases_folder):
-            # Find a file that starts with 'BASE' and contains the model number
             if (filename.upper().startswith('BASE') and 
                 model_key in filename and 
                 not filename.startswith("~")):
-                
-                target_file_path = os.path.join(bases_folder, filename)
-                target_filename = filename
-                break # Stop after finding the first match
-
-        if not target_file_path:
-            q.put(("status", f"Model {model_key}: ERRO - Nenhum arquivo BASE encontrado para este modelo."))
+                base_file = filename
+                break
+        
+        if not base_file:
+            q.put(("status", f"Modelo {model_key}: ERRO - Arquivo BASE não encontrado."))
             return
+        
+        base_file_path = os.path.join(bases_folder, base_file)
+        q.put(("status", f"Modelo {model_key}: Arquivo BASE encontrado: {base_file}"))
+        
+        # Open Excel app for this thread (each thread needs its own app instance)
+        app = xw.App(visible=True, add_book=False)
+        app.display_alerts = False
+        
+        try:
+            # First, open GRIGLIA file in this Excel instance so it's accessible
+            griglia_file = None
+            for filename in os.listdir(bases_folder):
+                if 'GRIGLIA OPCIONAIS' in filename.upper() and not filename.startswith("~"):
+                    griglia_file = filename
+                    break
             
-        q.put(("status", f"Model {model_key}: Arquivo encontrado: {target_filename}"))
-
-        # Step 2: Open the file with xlwings and paste the data
-        # Use a new app instance for each thread to ensure stability
-        with xw.App(visible=False) as app:
-            wb = app.books.open(target_file_path)
+            if griglia_file:
+                griglia_path = os.path.join(bases_folder, griglia_file)
+                wb_griglia_local = app.books.open(griglia_path, update_links=False, read_only=True)
+                q.put(("status", f"Modelo {model_key}: GRIGLIA aberto na mesma instância do Excel."))
+            
+            # Open BASE file for this model
+            wb_base = app.books.open(base_file_path, update_links=False)
+            
             try:
-                ws = wb.sheets['ARQUIVO PREVISÕES']
+                # Access ANALYSIS sheet
+                if 'ANALYSIS' not in [s.name for s in wb_base.sheets]:
+                    q.put(("status", f"Modelo {model_key}: ERRO - Planilha 'ANALYSIS' não encontrada."))
+                    return
                 
-                # Clear old data and paste new data starting at B2
-                # This automatically includes the header
-                ws.range('B2:Y10000000000').expand().clear_contents()
-                ws.range('B2').value = df_to_paste[1:,]
+                ws_analysis = wb_base.sheets['ANALYSIS']
+                q.put(("status", f"Modelo {model_key}: Planilha 'ANALYSIS' acessada."))
                 
-                wb.save()
-                q.put(("status", f"Model {model_key}: Base '{target_filename}' atualizada com sucesso."))
-            except Exception as sheet_error:
-                q.put(("status", f"Model {model_key}: ERRO ao processar a planilha em '{target_filename}': {sheet_error}"))
+                # Find and update pivot tables
+                pivot_tables = ws_analysis.api.PivotTables()
+                
+                if pivot_tables.Count == 0:
+                    q.put(("status", f"Modelo {model_key}: AVISO - Nenhuma tabela dinâmica encontrada."))
+                else:
+                    for i in range(1, pivot_tables.Count + 1):
+                        pivot_table = pivot_tables.Item(i)
+                        pivot_name = pivot_table.Name
+                        
+                        # Check pivot table location
+                        pivot_location = pivot_table.TableRange1.Address
+                        q.put(("status", f"Modelo {model_key}: Processando '{pivot_name}' em {pivot_location}"))
+                        
+                        # Update the data source using the shared GRIGLIA link
+                        try:
+                            pivot_table.ChangePivotCache(
+                                wb_base.api.PivotCaches().Create(
+                                    SourceType=1,  # xlDatabase
+                                    SourceData=data_source_link
+                                )
+                            )
+                            q.put(("status", f"Modelo {model_key}: Fonte de dados atualizada para '{pivot_name}'"))
+                            
+                            # Refresh the pivot table
+                            pivot_table.RefreshTable()
+                            q.put(("status", f"Modelo {model_key}: '{pivot_name}' atualizada com sucesso."))
+                        except Exception as e:
+                            q.put(("status", f"Modelo {model_key}: ERRO ao atualizar '{pivot_name}': {e}"))
+                
+                # Save the BASE file
+                q.put(("status", f"Modelo {model_key}: Salvando arquivo BASE..."))
+                wb_base.save()
+                q.put(("status", f"Modelo {model_key}: Tabelas dinâmicas atualizadas e arquivo salvo."))
+                
             finally:
-                wb.close()
-
+                wb_base.close()
+                # Close local GRIGLIA file
+                if griglia_file and 'wb_griglia_local' in locals():
+                    wb_griglia_local.close()
+                
+        finally:
+            app.quit()
+        
     except Exception as e:
-        q.put(("status", f"Model {model_key}: ERRO FATAL em Atualizar_Base_previsao: {e}"))
+        q.put(("status", f"Modelo {model_key}: ERRO em Atualizar_Links_Pivort_tables_Single_Model: {e}"))
+        import traceback
+        q.put(("status", f"Modelo {model_key}: Traceback: {traceback.format_exc()}"))
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        

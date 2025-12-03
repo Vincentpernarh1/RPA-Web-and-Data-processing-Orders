@@ -18,28 +18,30 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 # --- HELPER FUNCTIONS (UNCHANGED) ---
 
-def get_playwright_browser_path():
-    """Determines the path to the Playwright Chromium executable."""
-    if getattr(sys, 'frozen', False):
-        # Path when running as a bundled executable (e.g., PyInstaller)
-        base_path = sys._MEIPASS
-    else:
-        # Path when running as a .py script
-        base_path = os.path.expanduser(r"~\AppData\Local")
 
-    chromium_path = os.path.join(
-        base_path, "ms-playwright", "chromium-1187", "chrome-win", "chrome.exe"
-    )
-    
-    if not os.path.exists(chromium_path):
-        # Fallback if the specific version is not found, letting Playwright decide.
-        # This makes the script more robust to Playwright updates.
-        return None
-    
+def get_playwright_browser_path():
+    if getattr(sys, 'frozen', False):
+        base_path = sys._MEIPASS
+        chromium_path = os.path.join(base_path, "ms-playwright", "chromium-1187", "chrome-win", "chrome.exe")
+    else:
+        base_path = r"C:\Users\perna\AppData\Local"
+
+        # Join the rest of the Playwright folder path
+        chromium_path = os.path.join(
+            base_path,
+            "ms-playwright",
+            "chromium-1187",
+            "chrome-win",
+            "chrome.exe"
+        )
+   
+    if chromium_path and not os.path.exists(chromium_path):
+        raise FileNotFoundError(f"Chromium executable not found at {chromium_path}")
+
     return chromium_path
 
 
-def update_gui(queue_instance, status_label, progress_bar, log_text, root=None):
+def update_gui(queue_instance, status_label, progress_bar, log_text, root=None, process_button=None):
     """Checks the queue for messages and updates the GUI."""
     try:
         while True:
@@ -54,15 +56,15 @@ def update_gui(queue_instance, status_label, progress_bar, log_text, root=None):
                 status_label.config(text="Processo Concluído!")
                 progress_bar['value'] = 100
                 # Re-enable the button when done
-                if root:
-                    root.nametowidget("main_frame.process_button").config(state="normal")
+                if process_button:
+                    process_button.config(state="normal")
                 return # Stop the polling loop
     except queue.Empty:
         pass
     
     # Continue polling
     if root:
-        root.after(100, lambda: update_gui(queue_instance, status_label, progress_bar, log_text, root))
+        root.after(100, lambda: update_gui(queue_instance, status_label, progress_bar, log_text, root, process_button))
     else:
         status_label.after(100, lambda: update_gui(queue_instance, status_label, progress_bar, log_text))
 
@@ -113,26 +115,26 @@ def main_process(q: queue.Queue):
         q.put(("status", "Iniciando download dos arquivos..."))
 
         # # Create and start the manager thread for downloading models.
-        # model_thread = threading.Thread(
-        #     target=download_por_modelo, 
-        #     args=(url_oss, q, username, password, modelos_to_process, chromium_path)
-        # )
+        model_thread = threading.Thread(
+            target=download_por_modelo, 
+            args=(url_oss, q, username, password, modelos_to_process, chromium_path)
+        )
         
 
         # For example:
-        a14_thread = threading.Thread(target=download_A14,  
-                args=(url_order, q, username, password, chromium_path)
-                )
+        # a14_thread = threading.Thread(target=download_A14,  
+        #         args=(url_order, q, username, password, chromium_path)
+        #         )
         
 
 
         # Inicializando os threads
-        a14_thread.start()
-        # model_thread.start()
+        # a14_thread.start()
+        model_thread.start()
         
         # Wait for all threads to finish
-        # model_thread.join()
-        a14_thread.join()
+        model_thread.join()
+        # a14_thread.join()
 
         q.put(("status", "Processo de automação finalizado."))
 
@@ -152,9 +154,6 @@ class App:
         self.root.geometry("700x550")
         self.root.resizable(True, True)
         
-        # DHL & STELLANTIS Colors
-        # DHL: Red (#FF0000), Yellow (#FFCC00)
-        # STELLANTIS: Blue (#003DA5), Orange (#FF6600)
         dhl_red = "#FF0000"
         dhl_yellow = "#FFCC00"
         stellantis_blue = "#003DA5"
@@ -256,7 +255,7 @@ class App:
         self.thread.start()
         
         # Start checking the queue for updates
-        update_gui(self.queue, self.status_label, self.progress_bar, self.log_text, self.root)
+        update_gui(self.queue, self.status_label, self.progress_bar, self.log_text, self.root, self.process_button)
 
 if __name__ == "__main__":
     root = tk.Tk()
