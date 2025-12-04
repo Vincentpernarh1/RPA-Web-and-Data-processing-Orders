@@ -104,7 +104,7 @@ def main_process(q: queue.Queue):
         modelos_to_process = load_modelos()
        
        
-        Atualizar_Links_Pivort_tables_Single_Model("675",q)
+        Atualizar_Links_Pivort_tables_Single_Model("265",q)
         
         
         return

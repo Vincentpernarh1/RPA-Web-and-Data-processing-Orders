@@ -445,9 +445,7 @@ def Atualizar_Base_Modelos(df_to_paste, model_key, q):
     except Exception as e:
         q.put(("status", f"Modelo {model_key}: ERRO FATAL em Atualizar_Base_Modelos: {e}"))
         
-        
-        
-           
+               
 def Atualizar_Links_Pivort_tables_Single_Model(model_key, q):
     
     try:
@@ -618,8 +616,7 @@ def Atualizar_Links_Pivort_tables_Single_Model(model_key, q):
         import traceback
         q.put(("status", f"Modelo {model_key}: Traceback: {traceback.format_exc()}"))
         
-        
-        
+           
 def Atualizar_Previsao_X_Istograma(model_key, q, app, wb_base, base_filename):
     
     try:
@@ -733,6 +730,9 @@ def Atualizar_Previsao_X_Istograma(model_key, q, app, wb_base, base_filename):
             wb_previsoes.save()
             q.put(("status", f"Modelo {model_key}: PREVISÕES X ISTOGRAMA atualizado e salvo com sucesso."))
             
+            
+            Criar_Dados_A_Analizar_Previsoes(wb_previsoes, model_key, q)
+            
         finally:
             wb_previsoes.close()
             q.put(("status", f"Modelo {model_key}: Arquivo PREVISÕES X ISTOGRAMA fechado."))
@@ -745,6 +745,187 @@ def Atualizar_Previsao_X_Istograma(model_key, q, app, wb_base, base_filename):
     
         
         
+def Criar_Dados_A_Analizar_Previsoes(wb_previsoes, model_key, q):
+    """
+    Extract rows with non-zero/non-empty values from the data range (DL9:DW+) 
+    and copy them to a new sheet 'PREVISÕES A CORRIGIR' with formatting.
+    """
+    try:
+        q.put(("status", f"Modelo {model_key}: Iniciando criação de dados a analisar..."))
+        
+        # Access the correct sheet
+        sheet_names = ['ANÁLISE PREVISÕES OPCIONAIS', 'ANÁLISE PREVISÕES POR OPCIONAL']
+        sheet_name = None
+        
+        for name in sheet_names:
+            if name in [s.name for s in wb_previsoes.sheets]:
+                sheet_name = name
+                break
+        
+        if sheet_name is None:
+            q.put(("status", f"Modelo {model_key}: ERRO - Nenhuma planilha encontrada para análise de previsões."))
+            return
+        
+        ws_source = wb_previsoes.sheets[sheet_name]
+        q.put(("status", f"Modelo {model_key}: Processando planilha '{sheet_name}'..."))
+        
+        # Step 1: Find the last column in row 6 starting from DL
+        try:
+            # DL is column 116 (D=4, L=12 -> 4*26 + 12 = 116)
+            start_col = 116  # DL
+            last_col = ws_source.range(f'DL6').end('right').column
+            q.put(("status", f"Modelo {model_key}: Última coluna detectada: {get_column_letter(last_col)} (coluna {last_col})"))
+        except Exception as e:
+            q.put(("status", f"Modelo {model_key}: ERRO ao detectar última coluna: {e}. Usando DW como padrão."))
+            last_col = 126  # DW = 4*26 + 23 = 126
+        
+        # Step 2: Find the last row with data - use used range or column A
+        try:
+            # Try to find last row by checking the used range
+            used_range = ws_source.used_range
+            last_row = used_range.last_cell.row
+            
+            # If that gives a small number, try column A specifically
+            if last_row < 50:
+                # Start from A9 and go down to find last row with data
+                test_range = ws_source.range('A9')
+                if test_range.value is not None:
+                    last_row = ws_source.range('A9').end('down').row
+                else:
+                    # If A9 is empty, use the entire column
+                    last_row = ws_source.range('A1048576').end('up').row
+            
+            q.put(("status", f"Modelo {model_key}: Última linha com dados: {last_row}"))
+        except Exception as e:
+            q.put(("status", f"Modelo {model_key}: ERRO ao detectar última linha: {e}"))
+            return
+        
+        # Step 3: Create or clear the target sheet
+        target_sheet_name = 'PREVISÕES A CORRIGIR'
+        
+        if target_sheet_name in [s.name for s in wb_previsoes.sheets]:
+            wb_previsoes.sheets[target_sheet_name].delete()
+            q.put(("status", f"Modelo {model_key}: Planilha '{target_sheet_name}' deletada."))
+        
+        ws_target = wb_previsoes.sheets.add(target_sheet_name)
+        q.put(("status", f"Modelo {model_key}: Planilha '{target_sheet_name}' criada."))
+        
+        # Step 4: Copy header rows (rows 4 to 6) - values with formatting
+        try:
+            q.put(("status", f"Modelo {model_key}: Copiando cabeçalho (linhas 4-6) com formatação..."))
+            
+            # Unhide all rows and columns in source to ensure complete copy
+            try:
+                ws_source.api.Rows.Hidden = False
+                ws_source.api.Columns.Hidden = False
+                q.put(("status", f"Modelo {model_key}: Linhas e colunas ocultas reveladas na origem."))
+            except:
+                pass
+            
+            # Copy the entire range with formatting using Windows API
+            source_range = ws_source.range(f'A3:{get_column_letter(last_col)}6')
+            target_range = ws_target.range('A1')
+            
+            # Use Windows API to copy values and formatting (no formulas)
+            source_range.api.Copy()
+            target_range.api.PasteSpecial(Paste=-4163)  # xlPasteFormats (formats only)
+            target_range.api.PasteSpecial(Paste=-4163)  # xlPasteFormats second to ensure merge cells
+            target_range.api.PasteSpecial(Paste=-4122)  # xlPasteValuesAndNumberFormats (values + number formats)
+            wb_previsoes.app.api.CutCopyMode = False
+            
+            q.put(("status", f"Modelo {model_key}: Cabeçalho copiado (valores + formatação, sem fórmulas)."))
+        except Exception as e:
+            q.put(("status", f"Modelo {model_key}: ERRO ao copiar cabeçalho: {e}"))
+        
+        # Step 5: Filter and copy rows with non-zero/non-empty values
+        rows_to_copy = []
+        start_col_letter = get_column_letter(start_col)
+        end_col_letter = get_column_letter(last_col)
+        
+        q.put(("status", f"Modelo {model_key}: Analisando linhas de 9 até {last_row} nas colunas {start_col_letter} até {end_col_letter}..."))
+        
+        for row_num in range(9, last_row + 1):
+            # Get values from DL to last_col for this row
+            data_range = ws_source.range(f'{start_col_letter}{row_num}:{end_col_letter}{row_num}')
+            values = data_range.value
+            
+            # Check if any value is non-zero and non-empty
+            has_valid_data = False
+            
+            # Handle both single value and list of values
+            if not isinstance(values, (list, tuple)):
+                values = [values]
+            else:
+                # Flatten if it's a nested list (single row returns as list of lists)
+                if len(values) > 0 and isinstance(values[0], (list, tuple)):
+                    values = values[0]
+            
+            
+            for val in values:
+                if val is not None and val != "" and val != 0:
+                    # Check if it's a numeric value different from 0
+                    if isinstance(val, (int, float)) and val != 0:
+                        has_valid_data = True
+                        break
+                    # Check if it's a non-empty string
+                    elif isinstance(val, str) and val.strip() != "" and val.strip() != "0":
+                        has_valid_data = True
+                        break
+            
+            if has_valid_data:
+                rows_to_copy.append(row_num)
+        
+        q.put(("status", f"Modelo {model_key}: Encontradas {len(rows_to_copy)} linhas com dados a corrigir."))
+        
+        # Step 6: Copy filtered rows with formatting
+        if rows_to_copy:
+            q.put(("status", f"Modelo {model_key}: Copiando {len(rows_to_copy)} linhas para '{target_sheet_name}'..."))
+            target_row = 5  # Start pasting from row 6 (rows 1-3 have header, 4-5 are buffer)
+            
+            for idx, source_row in enumerate(rows_to_copy, 1):
+                try:
+                    # Copy entire row with formatting - using direct range copy
+                    source_range = ws_source.range(f'A{source_row}:{get_column_letter(last_col)}{source_row}')
+                    target_range = ws_target.range(f'A{target_row}:{get_column_letter(last_col)}{target_row}')
+                    
+                    # Copy with API
+                    source_range.api.Copy()
+                    target_range.api.PasteSpecial(Paste=-4104)  # xlPasteAllUsingSourceTheme
+                    
+                    target_row += 1
+                    
+                    # Log progress every 10 rows
+                    if idx % 10 == 0:
+                        q.put(("status", f"Modelo {model_key}: Copiadas {idx}/{len(rows_to_copy)} linhas..."))
+                    
+                    # Clear clipboard every 50 rows to prevent memory issues
+                    if idx % 50 == 0:
+                        wb_previsoes.app.api.CutCopyMode = False
+                        
+                except Exception as row_error:
+                    q.put(("status", f"Modelo {model_key}: ERRO ao copiar linha {source_row}: {row_error}"))
+            
+            wb_previsoes.app.api.CutCopyMode = False
+            q.put(("status", f"Modelo {model_key}: {len(rows_to_copy)} linhas copiadas para '{target_sheet_name}'."))
+            
+            # Verify data was copied
+            try:
+                test_value = ws_target.range('A4').value
+                q.put(("status", f"Modelo {model_key}: Verificação - Valor em A4: {test_value}"))
+            except:
+                pass
+        else:
+            q.put(("status", f"Modelo {model_key}: Nenhuma linha com dados a corrigir encontrada."))
+        
+        # Step 7: Save the workbook
+        q.put(("status", f"Modelo {model_key}: Salvando planilha '{target_sheet_name}'..."))
+        wb_previsoes.save()
+        q.put(("status", f"Modelo {model_key}: Planilha '{target_sheet_name}' criada e salva com sucesso."))
+        
+    except Exception as e:
+        q.put(("status", f"Modelo {model_key}: ERRO em Criar_Dados_A_Analizar_Previsoes: {e}"))
+        import traceback
+        q.put(("status", f"Modelo {model_key}: Traceback: {traceback.format_exc()}"))    
         
         
         
