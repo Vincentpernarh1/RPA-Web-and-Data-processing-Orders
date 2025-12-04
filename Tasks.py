@@ -507,6 +507,16 @@ def Atualizar_Links_Pivort_tables_Single_Model(model_key, q):
                 if pivot_tables.Count == 0:
                     q.put(("status", f"Modelo {model_key}: AVISO - Nenhuma tabela dinâmica encontrada."))
                 else:
+                    # Find last valid row in GRIGLIA BANCO sheet (column A)
+                    try:
+                        ws_griglia_banco = wb_griglia_local.sheets['BANCO']
+                        # Find last row with data in column A starting from A1
+                        last_row_griglia = ws_griglia_banco.range('A1').end('down').row
+                        q.put(("status", f"Modelo {model_key}: Última linha válida em GRIGLIA BANCO: {last_row_griglia}"))
+                    except Exception as e:
+                        q.put(("status", f"Modelo {model_key}: ERRO ao encontrar última linha em GRIGLIA: {e}. Usando linha padrão 3207."))
+                        last_row_griglia = 3207
+                    
                     for i in range(1, pivot_tables.Count + 1):
                         pivot_table = pivot_tables.Item(i)
                         pivot_name = pivot_table.Name
@@ -518,7 +528,7 @@ def Atualizar_Links_Pivort_tables_Single_Model(model_key, q):
                         # Update the data source using the shared GRIGLIA link
                         try:
                             wb_name = os.path.basename(griglia_path)  # e.g. "GRIGLIA OPCIONAIS 01.12.2025.xlsb"
-                            source_data = f"'[{wb_name}]BANCO'!$A$1:$Q$3207"
+                            source_data = f"'[{wb_name}]BANCO'!$A$1:$Q${last_row_griglia}"
 
                             q.put(("status", f"Modelo {model_key}: Usando fonte de dados: {source_data}"))
 
@@ -588,7 +598,8 @@ def Atualizar_Links_Pivort_tables_Single_Model(model_key, q):
                 wb_base.save()
                 q.put(("status", f"Modelo {model_key}: Tabelas dinâmicas atualizadas e arquivo salvo."))
                 
-                Atualizar_Previsao_X_Istograma(model_key, q)
+                # Update PREVISÕES X ISTOGRAMA file (keep BASE file open)
+                Atualizar_Previsao_X_Istograma(model_key, q, app, wb_base, base_file)
                 
                 
             finally:
@@ -609,26 +620,127 @@ def Atualizar_Links_Pivort_tables_Single_Model(model_key, q):
         
         
         
-def Atualizar_Previsao_X_Istograma(model_key, q) :
+def Atualizar_Previsao_X_Istograma(model_key, q, app, wb_base, base_filename):
     
-   
+    try:
+        q.put(("status", f"Modelo {model_key}: Iniciando atualização PREVISÕES X ISTOGRAMA..."))
         
-    if not os.path.exists(bases_folder):
-        q.put(("status", f"Modelo {model_key}: ERRO - Pasta 'Bases' não encontrada."))
-        return
-    
-    # Find BASE file for this model
-    base_file = None
-    for filename in os.listdir(bases_folder):
-        if (filename.upper().startswith('PREVISÕES X ISTOGRAMA') and 
-            model_key in filename and 
-            not filename.startswith("~")):
-            base_file = filename
-            break
+        if not os.path.exists(bases_folder):
+            q.put(("status", f"Modelo {model_key}: ERRO - Pasta 'Bases' não encontrada."))
+            return
         
-    if not base_file:
-        q.put(("status", f"Modelo {model_key}: ERRO - Arquivo BASE não encontrado."))
-        return
+        # Find PREVISÕES X ISTOGRAMA file for this model
+        previsoes_file = None
+        for filename in os.listdir(bases_folder):
+            if (filename.upper().startswith('PREVISÕES')  and "ISTOGRAMA" in filename.upper() and 
+                model_key in filename and 
+                not filename.startswith("~")):
+                previsoes_file = filename
+                break
+            
+        if not previsoes_file:
+            q.put(("status", f"Modelo {model_key}: AVISO - Arquivo PREVISÕES X ISTOGRAMA não encontrado. Pulando..."))
+            return
+        
+        previsoes_file_path = os.path.join(bases_folder, previsoes_file)
+        q.put(("status", f"Modelo {model_key}: Arquivo PREVISÕES encontrado: {previsoes_file}"))
+        
+        # Open PREVISÕES X ISTOGRAMA file in the same Excel instance
+        wb_previsoes = app.books.open(previsoes_file_path, update_links=False)
+        
+        try:
+            # Access ANÁLISE PREVISÕES OPCIONAIS or ANÁLISE PREVISÕES POR OPCIONAL sheet
+            sheet_names = ['ANÁLISE PREVISÕES OPCIONAIS', 'ANÁLISE PREVISÕES POR OPCIONAL']
+            sheet_name = None
+            
+            for name in sheet_names:
+                if name in [s.name for s in wb_previsoes.sheets]:
+                    sheet_name = name
+                    break
+            
+            if sheet_name is None:
+                q.put(("status", f"Modelo {model_key}: ERRO - Nenhuma planilha encontrada com os nomes esperados: {sheet_names}"))
+                return
+            
+            ws_previsoes = wb_previsoes.sheets[sheet_name]
+            q.put(("status", f"Modelo {model_key}: Planilha '{sheet_name}' acessada."))
+            
+            # Find and update pivot tables
+            pivot_tables = ws_previsoes.api.PivotTables()
+            
+            if pivot_tables.Count == 0:
+                q.put(("status", f"Modelo {model_key}: AVISO - Nenhuma tabela dinâmica encontrada em '{sheet_name}'."))
+            else:
+                q.put(("status", f"Modelo {model_key}: Encontradas {pivot_tables.Count} tabela(s) dinâmica(s)."))
+                
+                # Find last valid row in BASE ANALYSIS sheet (column Q starting from Q5)
+                try:
+                    ws_base_analysis = wb_base.sheets['ANALYSIS']
+                    # Find last row with data in column Q starting from Q5
+                    last_row_analysis = ws_base_analysis.range('Q5').end('down').row
+                    q.put(("status", f"Modelo {model_key}: Última linha válida em BASE ANALYSIS (coluna Q): {last_row_analysis}"))
+                except Exception as e:
+                    q.put(("status", f"Modelo {model_key}: ERRO ao encontrar última linha em ANALYSIS: {e}. Usando linha padrão 49."))
+                    last_row_analysis = 49
+                
+                for i in range(1, pivot_tables.Count + 1):
+                    pivot_table = pivot_tables.Item(i)
+                    pivot_name = pivot_table.Name
+                    
+                    # Check pivot table location
+                    pivot_location = pivot_table.TableRange1.Address
+                    q.put(("status", f"Modelo {model_key}: Processando '{pivot_name}' em {pivot_location}"))
+                    
+                    # Update the data source using the BASE file ANALYSIS sheet range Q5:EO49
+                    try:
+                        # Build external link to BASE file's ANALYSIS sheet
+                        source_data = f"'[{base_filename}]ANALYSIS'!$Q$5:$EO${last_row_analysis}"
+                        
+                        q.put(("status", f"Modelo {model_key}: Usando fonte de dados: {source_data}"))
+                        
+                        # Create a new pivot cache pointing to the BASE file's ANALYSIS range
+                        xlDatabase = 1
+                        new_cache = wb_previsoes.api.PivotCaches().Create(xlDatabase, source_data)
+                        
+                        try:
+                            pivot_table.ChangePivotCache(new_cache)
+                        except Exception as inner_e:
+                            try:
+                                pivot_table.PivotCache = new_cache
+                            except Exception:
+                                raise inner_e
+                        
+                        # Refresh the cache and pivot table
+                        try:
+                            new_cache.Refresh()
+                        except Exception:
+                            pass
+                        
+                        sleep(1)
+                        
+                        q.put(("status", f"Modelo {model_key}: Atualizando tabela dinâmica '{pivot_name}'..."))
+                        pivot_table.RefreshTable()
+                        
+                        q.put(("status", f"Modelo {model_key}: '{pivot_name}' atualizada com sucesso."))
+                        
+                    except Exception as e:
+                        q.put(("status", f"Modelo {model_key}: ERRO ao atualizar '{pivot_name}': {e}"))
+                        import traceback
+                        q.put(("status", f"Modelo {model_key}: Traceback: {traceback.format_exc()}"))
+            
+            # Save the PREVISÕES X ISTOGRAMA file
+            q.put(("status", f"Modelo {model_key}: Salvando arquivo PREVISÕES X ISTOGRAMA..."))
+            wb_previsoes.save()
+            q.put(("status", f"Modelo {model_key}: PREVISÕES X ISTOGRAMA atualizado e salvo com sucesso."))
+            
+        finally:
+            wb_previsoes.close()
+            q.put(("status", f"Modelo {model_key}: Arquivo PREVISÕES X ISTOGRAMA fechado."))
+            
+    except Exception as e:
+        q.put(("status", f"Modelo {model_key}: ERRO em Atualizar_Previsao_X_Istograma: {e}"))
+        import traceback
+        q.put(("status", f"Modelo {model_key}: Traceback: {traceback.format_exc()}"))
     
     
         

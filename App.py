@@ -104,10 +104,12 @@ def main_process(q: queue.Queue):
         modelos_to_process = load_modelos()
        
        
-        # Atualizar_Links_Pivort_tables_Single_Model("265","jsdjs",q)
+        Atualizar_Links_Pivort_tables_Single_Model("675",q)
         
         
-        # return
+        return
+    
+    
         # Data validation check
         if not isinstance(modelos_to_process, dict):
             error_msg = "ERRO: O arquivo Modelos.json não é um dicionário válido."
