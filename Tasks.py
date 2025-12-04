@@ -239,8 +239,8 @@ def download_por_modelo(url_oss, q, username, password, Modelos, chromium_path):
         wb_griglia = app_griglia.books.open(griglia_path, update_links=False)
         
         # Create the dynamic link to GRIGLIA OPCIONAIS BANCO sheet
-        # Use full absolute path for cross-workbook reference
-        data_source_link = f"'{griglia_path}'!BANCO!$A$1:$Q$3207"
+        # When workbooks are in same instance, use: 'path\[file.xlsb]SheetName'!Range
+        data_source_link = f"'{griglia_path}'!$A$1:$Q$3207"
         q.put(("status", f"Gerenciador: GRIGLIA aberto. Link de dados: {data_source_link}"))
         
         # Start all model threads
@@ -419,7 +419,6 @@ def Atualizar_Base_Modelos(df_to_paste, model_key, q):
             wb = app.books.open(target_file_path, update_links=False)
             
             try:
-                
                 ws = wb.sheets['ARQUIVO PREVISÕES']
                 q.put(("status", f"Modelo {model_key}: Limpando dados antigos da planilha..."))
                 
@@ -432,7 +431,6 @@ def Atualizar_Base_Modelos(df_to_paste, model_key, q):
                     if used_range.rows.count > 0:
                         last_used_row = used_range.last_cell.row
                         ws.range(f'B3:AE{last_used_row}').clear_contents()
-                        print(f"Cleared old data from B3:AE{last_used_row}")
                 except:
                     # If no data exists, just clear a small range
                     ws.range('B3:AE1000').clear_contents()
@@ -442,31 +440,37 @@ def Atualizar_Base_Modelos(df_to_paste, model_key, q):
                     # Calculate the last row based on data size
                     num_data_rows = len(df_data_only)
                     last_row = 2 + num_data_rows  # Row 2 is template, data starts at row 3
-                    print(f"Will fill {num_data_rows} rows, last row will be {last_row}")
                     
-                    q.put(("status", f"Modelo {model_key}: Aplicando formatação e fórmulas para {num_data_rows} linhas..."))
+                    q.put(("status", f"Modelo {model_key}: Colando dados ({num_data_rows} linhas)..."))
                     
-                    # 1. FIRST: USE AUTOFILL to copy format and formulas from row 2 to all rows
-                    # Select the template row (A2:AE2) - STOP AT AE TO AVOID PIVOT TABLE
-                    template_range = ws.range('A2:AE2')
-                    
-                    # Define the destination range (A2:AE[last_row])
-                    fill_range = ws.range(f'A2:AE{last_row}')
-                    
-                    # Use autofill to copy format and formulas down
-                    print(f"Autofilling format and formulas from row 2 to row {last_row}...")
-                    template_range.autofill(fill_range)
-                    print(f"Autofill completed")
-                    
-                    q.put(("status", f"Modelo {model_key}: Colando dados na planilha..."))
-                    
-                    # 2. THEN: PASTE DATA starting at B3 (this will overwrite the formulas in columns B onwards)
+                    # 1. PASTE DATA FIRST at B3
                     start_cell = ws.range('B3')
-                    
-                    print("Pasting data starting at B3...")
-                    # Paste only the data values
                     start_cell.options(header=False, index=False).value = df_data_only.values
-                    print(f"Data pasted successfully")
+                    
+                    q.put(("status", f"Modelo {model_key}: Aplicando formatação e fórmulas..."))
+                    
+                    # 2. COPY FORMAT AND FORMULAS - more efficiently using copy/paste
+                    template_range = ws.range('A2:AE2')
+                    target_range = ws.range(f'A3:AE{last_row}')
+                    
+                    # Copy template formatting
+                    template_range.api.Copy()
+                    # Paste formats only (no values) to avoid overwriting data
+                    target_range.api.PasteSpecial(Paste=-4122)  # xlPasteFormats
+                    
+                    # Copy formulas from column A (always has formulas)
+                    ws.range('A2').copy(ws.range(f'A3:A{last_row}'))
+                    
+                    # Copy formulas from columns Z-AE (these columns have formulas)
+                    ws.range('Z2:AE2').copy(ws.range(f'Z3:AE{last_row}'))
+                    
+                    # Copy formulas from columns after AE (if any exist)
+                    template_formulas = ws.range('AF2:ZZ2').formula
+                    if any(f for f in template_formulas if f and str(f).startswith('=')):
+                        ws.range('AF2:ZZ2').copy(ws.range(f'AF3:ZZ{last_row}'))
+                    
+                    # Clear clipboard
+                    app.api.CutCopyMode = False
                     
                     q.put(("status", f"Modelo {model_key}: Dados colados e formatados em '{target_filename}' ({num_data_rows} linhas)."))
 
@@ -474,10 +478,8 @@ def Atualizar_Base_Modelos(df_to_paste, model_key, q):
                     # If there's no data after removing the header, log a warning.
                     q.put(("status", f"Modelo {model_key}: AVISO - Sem dados para colar. Planilha '{target_filename}' foi limpa."))
                     
-                print("Saving workbook...")
                 q.put(("status", f"Modelo {model_key}: Salvando arquivo {target_filename}..."))
                 wb.save()
-                print("Workbook saved successfully")
             except Exception as sheet_error:
                 q.put(("status", f"Modelo {model_key}: ERRO ao processar a planilha em '{target_filename}': {sheet_error}"))
                 raise
@@ -493,11 +495,7 @@ def Atualizar_Base_Modelos(df_to_paste, model_key, q):
         
            
 def Atualizar_Links_Pivort_tables_Single_Model(model_key, data_source_link, q):
-    """
-    Updates pivot table data sources for a single model.
-    Uses the pre-opened GRIGLIA OPCIONAIS file link.
-    This function runs in each model's thread independently.
-    """
+    
     try:
         # Get base paths
         base_path = os.getcwd()
@@ -537,7 +535,7 @@ def Atualizar_Links_Pivort_tables_Single_Model(model_key, data_source_link, q):
             
             if griglia_file:
                 griglia_path = os.path.join(bases_folder, griglia_file)
-                wb_griglia_local = app.books.open(griglia_path, update_links=False, read_only=True)
+                wb_griglia_local = app.books.open(griglia_path, update_links=False)
                 q.put(("status", f"Modelo {model_key}: GRIGLIA aberto na mesma instância do Excel."))
             
             # Open BASE file for this model
@@ -568,30 +566,84 @@ def Atualizar_Links_Pivort_tables_Single_Model(model_key, data_source_link, q):
                         
                         # Update the data source using the shared GRIGLIA link
                         try:
-                            pivot_table.ChangePivotCache(
-                                wb_base.api.PivotCaches().Create(
-                                    SourceType=1,  # xlDatabase
-                                    SourceData=data_source_link
-                                )
-                            )
-                            q.put(("status", f"Modelo {model_key}: Fonte de dados atualizada para '{pivot_name}'"))
-                            
-                            # Refresh the pivot table
+                            wb_name = os.path.basename(griglia_path)  # e.g. "GRIGLIA OPCIONAIS 01.12.2025.xlsb"
+                            source_data = f"'[{wb_name}]BANCO'!$A$1:$Q$3207"
+
+                            q.put(("status", f"Modelo {model_key}: Usando fonte de dados: {source_data}"))
+
+                            # --- Use PivotCaches.Create to force a fresh cache (xlDatabase = 1) ---
+                            # Excel constant: xlDatabase = 1
+                            xlDatabase = 1
+
+                            # Create a new pivot cache on the BASE workbook, pointing to the external range
+                            new_cache = wb_base.api.PivotCaches().Create(xlDatabase, source_data)
+
+                            try:
+                                pivot_table.ChangePivotCache(new_cache)
+                            except Exception as inner_e:
+                                # Some Excel versions prefer assignment, but ChangePivotCache is standard
+                                try:
+                                    pivot_table.PivotCache = new_cache
+                                except Exception:
+                                    # fallback: raise the original inner exception to be caught below
+                                    raise inner_e
+
+                            # Refresh the cache (and the pivot)
+                            try:
+                                new_cache.Refresh()
+                            except Exception:
+                                # If cache refresh fails, still try to refresh the table
+                                pass
+
+                            # small pause to let Excel update internal structures
+                            sleep(1)
+
+                            q.put(("status", f"Modelo {model_key}: Atualizando tabela dinâmica..."))
                             pivot_table.RefreshTable()
+
                             q.put(("status", f"Modelo {model_key}: '{pivot_name}' atualizada com sucesso."))
                         except Exception as e:
+                            # If we still fail, print header row from GRIGLIA BANCO for debugging
+                            try:
+                                wb_name = os.path.basename(griglia_path)
+                                # wb_griglia_local should exist in locals() since you opened it earlier
+                                if 'wb_griglia_local' in locals():
+                                    try:
+                                        headers = wb_griglia_local.sheets['BANCO'].range('A1:Q1').value
+                                    except Exception:
+                                        # sometimes COM returns nested tuples for a single-row range; normalize
+                                        try:
+                                            headers = wb_griglia_local.sheets['BANCO'].range('A1:Q1').options(ndim=1).value
+                                        except Exception:
+                                            headers = None
+                                else:
+                                    headers = None
+                            except Exception:
+                                headers = None
+
                             q.put(("status", f"Modelo {model_key}: ERRO ao atualizar '{pivot_name}': {e}"))
+                            if headers is not None:
+                                # show each header with its index and a repr() to reveal spaces/unprintables
+                                header_debug = []
+                                for idx, h in enumerate(headers, start=1):
+                                    header_debug.append(f"col {idx}: {repr(h)}")
+                                q.put(("status", f"Modelo {model_key}: Headers A1..Q1 -> " + " | ".join(header_debug)))
+                            else:
+                                q.put(("status", f"Modelo {model_key}: Não foi possível ler cabeçalhos para diagnóstico."))
+
                 
-                # Save the BASE file
+                # Save the BASE file (GRIGLIA must stay open until after save)
                 q.put(("status", f"Modelo {model_key}: Salvando arquivo BASE..."))
                 wb_base.save()
                 q.put(("status", f"Modelo {model_key}: Tabelas dinâmicas atualizadas e arquivo salvo."))
                 
             finally:
                 wb_base.close()
-                # Close local GRIGLIA file
-                if griglia_file and 'wb_griglia_local' in locals():
-                    wb_griglia_local.close()
+            
+            # Close local GRIGLIA file AFTER BASE file is closed
+            if griglia_file and 'wb_griglia_local' in locals():
+                wb_griglia_local.close()
+                q.put(("status", f"Modelo {model_key}: GRIGLIA local fechado."))
                 
         finally:
             app.quit()

@@ -10,7 +10,7 @@ import warnings
 
 # --- Import your custom task functions ---
 # Make sure your Tasks.py file is in the same folder
-from Tasks import download_por_modelo
+from Tasks import download_por_modelo,Atualizar_Links_Pivort_tables_Single_Model
 from Tasks import download_A14  # Kept for future use
 
 
@@ -103,7 +103,11 @@ def main_process(q: queue.Queue):
         
         modelos_to_process = load_modelos()
        
+       
+        # Atualizar_Links_Pivort_tables_Single_Model("265","jsdjs",q)
         
+        
+        # return
         # Data validation check
         if not isinstance(modelos_to_process, dict):
             error_msg = "ERRO: O arquivo Modelos.json não é um dicionário válido."
