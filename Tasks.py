@@ -18,6 +18,8 @@ import csv
 import xlwings as xw
 from playwright.sync_api import Page, Browser
 
+base_path = os.getcwd()
+bases_folder = os.path.join(base_path, "Bases")
 
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -109,7 +111,6 @@ def Process_A14_options(file_path, q):
     df_result = pd.DataFrame(processed_data, columns=['PACK', 'CONTEÚDO'])
     q.put(("status", f"📦 {len(df_result)} registros prontos para atualização."))
 
-    base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
     Base_folder = os.path.join(base_path, "Bases")
 
     if not os.path.exists(Base_folder):
@@ -206,77 +207,32 @@ def download_A14(url_order,q,username,password,chromium_path) :
 def download_por_modelo(url_oss, q, username, password, Modelos, chromium_path):
     """This function is the 'thread manager'. It creates and starts a thread for each model."""
     threads = []
-    app_griglia = None
-    wb_griglia = None
-    data_source_link = None
     
-    try:
-        # Open GRIGLIA OPCIONAIS once at the start
-        base_path = os.getcwd()
-        bases_folder = os.path.join(base_path, "Bases")
-        
-        if not os.path.exists(bases_folder):
-            q.put(("status", "ERRO - Pasta 'Bases' não encontrada."))
-            return
-        
-        # Find GRIGLIA OPCIONAIS file
-        griglia_file = None
-        for filename in os.listdir(bases_folder):
-            if 'GRIGLIA OPCIONAIS' in filename.upper() and not filename.startswith("~"):
-                griglia_file = filename
-                break
-        
-        if not griglia_file:
-            q.put(("status", "ERRO - Arquivo GRIGLIA OPCIONAIS não encontrado."))
-            return
-        
-        griglia_path = os.path.join(bases_folder, griglia_file)
-        q.put(("status", f"Gerenciador: Abrindo arquivo GRIGLIA OPCIONAIS: {griglia_file}"))
-        
-        # Create Excel app and open GRIGLIA file ONCE
-        app_griglia = xw.App(visible=True, add_book=False)
-        app_griglia.display_alerts = False
-        wb_griglia = app_griglia.books.open(griglia_path, update_links=False)
-        
-        # Create the dynamic link to GRIGLIA OPCIONAIS BANCO sheet
-        # When workbooks are in same instance, use: 'path\[file.xlsb]SheetName'!Range
-        data_source_link = f"'{griglia_path}'!$A$1:$Q$3207"
-        q.put(("status", f"Gerenciador: GRIGLIA aberto. Link de dados: {data_source_link}"))
-        
-        # Start all model threads
-        for key, value in Modelos.items():
-            if key == '611':
-                q.put(("status", "Pulando modelo 611 com falha conhecida."))
-                continue
-                
-            thread = threading.Thread(
-                target=process_single_model,
-                args=(url_oss, q, username, password, key, value, chromium_path, data_source_link)
-            )
-            threads.append(thread)
-            thread.start()
-            q.put(("status", f"Gerenciador: Thread iniciada para o modelo {key}."))
+    # Start all model threads
+    for key, value in Modelos.items():
+        if key == '611':
+            q.put(("status", "Pulando modelo 611 com falha conhecida."))
+            continue
+            
+        thread = threading.Thread(
+            target=process_single_model,
+            args=(url_oss, q, username, password, key, value, chromium_path)
+        )
+        threads.append(thread)
+        thread.start()
+        q.put(("status", f"Gerenciador: Thread iniciada para o modelo {key}."))
 
-        # Wait for all model-processing threads to complete
-        for thread in threads:
-            thread.join()
+    # Wait for all model-processing threads to complete
+    for thread in threads:
+        thread.join()
 
-        q.put(("status", "Gerenciador: Todas as threads de processamento de modelos foram concluídas."))
-        
-    finally:
-        # Close GRIGLIA and Excel app at the end
-        if wb_griglia:
-            wb_griglia.close()
-            q.put(("status", "Gerenciador: Arquivo GRIGLIA OPCIONAIS fechado."))
-        if app_griglia:
-            app_griglia.quit()
-            q.put(("status", "Gerenciador: Excel finalizado."))
+    q.put(("status", "Gerenciador: Todas as threads de processamento de modelos foram concluídas."))
 
-def process_single_model(url_oss: str, q: queue.Queue, username: str, password: str, key: str, value: str, chromium_path: str, data_source_link: str):
+def process_single_model(url_oss: str, q: queue.Queue, username: str, password: str, key: str, value: str, chromium_path: str):
     """
     Processes a single model.
     This function is now COMPLETELY independent and thread-safe.
-    Each thread downloads, updates BASE, and updates pivot tables using the shared GRIGLIA link.
+    Each thread downloads, updates BASE, and updates pivot tables.
     """
     # Each thread now creates its own Playwright instance and browser.
     with sync_playwright() as p:
@@ -365,7 +321,7 @@ def process_single_model(url_oss: str, q: queue.Queue, username: str, password: 
                 
                 # Update pivot tables using the shared GRIGLIA link
                 q.put(("status", f"Modelo {key}: Atualizando tabelas dinâmicas..."))
-                Atualizar_Links_Pivort_tables_Single_Model(key, data_source_link, q)
+                Atualizar_Links_Pivort_tables_Single_Model(key, q)
             
             q.put(("status", f"Modelo {key}: Processamento completo concluído."))
 
@@ -387,8 +343,6 @@ def Atualizar_Base_Modelos(df_to_paste, model_key, q):
     
     try:
         # Step 1: Find the target file in the 'Bases' subfolder
-        base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
-        bases_folder = os.path.join(base_path, "Bases")
 
         if not os.path.exists(bases_folder):
             q.put(("status", f"Modelo {model_key}: ERRO - Pasta 'Bases' não encontrada."))
@@ -494,12 +448,9 @@ def Atualizar_Base_Modelos(df_to_paste, model_key, q):
         
         
            
-def Atualizar_Links_Pivort_tables_Single_Model(model_key, data_source_link, q):
+def Atualizar_Links_Pivort_tables_Single_Model(model_key, q):
     
     try:
-        # Get base paths
-        base_path = os.getcwd()
-        bases_folder = os.path.join(base_path, "Bases")
         
         if not os.path.exists(bases_folder):
             q.put(("status", f"Modelo {model_key}: ERRO - Pasta 'Bases' não encontrada."))
@@ -637,6 +588,9 @@ def Atualizar_Links_Pivort_tables_Single_Model(model_key, data_source_link, q):
                 wb_base.save()
                 q.put(("status", f"Modelo {model_key}: Tabelas dinâmicas atualizadas e arquivo salvo."))
                 
+                Atualizar_Previsao_X_Istograma(model_key, q)
+                
+                
             finally:
                 wb_base.close()
             
@@ -655,13 +609,28 @@ def Atualizar_Links_Pivort_tables_Single_Model(model_key, data_source_link, q):
         
         
         
+def Atualizar_Previsao_X_Istograma(model_key, q) :
+    
+   
         
+    if not os.path.exists(bases_folder):
+        q.put(("status", f"Modelo {model_key}: ERRO - Pasta 'Bases' não encontrada."))
+        return
+    
+    # Find BASE file for this model
+    base_file = None
+    for filename in os.listdir(bases_folder):
+        if (filename.upper().startswith('PREVISÕES X ISTOGRAMA') and 
+            model_key in filename and 
+            not filename.startswith("~")):
+            base_file = filename
+            break
         
-        
-        
-        
-        
-        
+    if not base_file:
+        q.put(("status", f"Modelo {model_key}: ERRO - Arquivo BASE não encontrado."))
+        return
+    
+    
         
         
         
