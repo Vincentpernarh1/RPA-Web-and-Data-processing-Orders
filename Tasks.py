@@ -773,11 +773,13 @@ def Criar_Dados_A_Analizar_Previsoes(wb_previsoes, model_key, q):
         try:
             # DL is column 116 (D=4, L=12 -> 4*26 + 12 = 116)
             start_col = 116  # DL
-            last_col = ws_source.range(f'DL6').end('right').column
-            q.put(("status", f"Modelo {model_key}: Última coluna detectada: {get_column_letter(last_col)} (coluna {last_col})"))
+            last_col_detected = ws_source.range(f'DL6').end('right').column
+            # Subtract 1 to exclude the observations column
+            last_col = last_col_detected - 1
+            q.put(("status", f"Modelo {model_key}: Última coluna detectada: {get_column_letter(last_col_detected)}, usando {get_column_letter(last_col)} (excluindo observações)"))
         except Exception as e:
-            q.put(("status", f"Modelo {model_key}: ERRO ao detectar última coluna: {e}. Usando DW como padrão."))
-            last_col = 126  # DW = 4*26 + 23 = 126
+            q.put(("status", f"Modelo {model_key}: ERRO ao detectar última coluna: {e}. Usando DV como padrão."))
+            last_col = 125  # DV = 4*26 + 22 = 125 (DW-1)
         
         # Step 2: Find the last row with data - use used range or column A
         try:

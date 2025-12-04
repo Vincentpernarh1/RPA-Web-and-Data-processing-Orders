@@ -42,11 +42,17 @@ RPA Orders/
 ├── App.py              # Main GUI application and orchestration
 ├── Tasks.py            # Core automation tasks and business logic
 ├── credencial.json     # Authentication credentials (sensitive)
-├── Modelos.json        # Vehicle model configuration
+├── Modelos.json        # Vehicle model configuration (currently: 675, 265)
 ├── Bases/              # Excel template files for data updates
+│   ├── BASE 265.xlsb
 │   ├── BASE 341.xlsb
 │   ├── BASE 611.xlsb
-│   └── GRIGLIA OPCIONAIS 29.09.2025.xlsb
+│   ├── BASE 675.xlsb
+│   ├── GRIGLIA OPCIONAIS 01.12.2025.xlsb
+│   ├── PREVISÕES X ISTOGRAMA 265.xlsb
+│   ├── PREVISÕES X ISTOGRAMA 341.xlsb
+│   ├── PREVISÕES X ISTOGRAMA 611.xlsb
+│   └── PREVISÕES X ISTOGRAMA 675.xlsb
 └── Dados/              # Downloaded data files (generated at runtime)
 ```
 
@@ -174,21 +180,27 @@ mkdir Bases
 
 ```json
 {
-  "341": "1XH_WSL",
+  "675": "4JP_WSL",
   "265": "3FI_WSL"
 }
 ```
 
 **Structure**:
-- **Key**: Model code (e.g., "341")
-- **Value**: OSS instance identifier (e.g., "1XH_WSL")
+- **Key**: Model code (e.g., "341", "611", "675", "265")
+- **Value**: OSS instance identifier (e.g., "1XH_WSL", "4JP_WSL", "3FI_WSL")
+
+**Current Active Models**: 675, 265
 
 ### 3. Directory Structure Requirements
 
 #### Bases/ Folder
 Must contain Excel template files with specific naming conventions:
 - **Pattern**: `BASE {model_code}.xlsb`
-- **Example**: `BASE 341.xlsb`, `BASE 611.xlsb`
+- **Example**: `BASE 341.xlsb`, `BASE 611.xlsb`, `BASE 265.xlsb`, `BASE 675.xlsb`
+- **Current Models**: 265, 341, 611, 675
+- **Additional Files**: 
+  - `GRIGLIA OPCIONAIS 01.12.2025.xlsb` - Options grid configuration
+  - `PREVISÕES X ISTOGRAMA {model}.xlsb` - Forecast vs histogram analysis files
 - **Required Sheets**:
   - `ARQUIVO PREVISÕES` - For forecast data updates
   - `A14` - For optional package data (created if missing)
@@ -480,11 +492,7 @@ The application can be packaged as a single executable using PyInstaller.
 
 #### Build Command
 ```bash
-pyinstaller --noconfirm --onefile --windowed --noconsole ^
-  --name "RPA Milk Run" ^
-  --icon "C:/path/to/your/icon.ico" ^
-  --add-data "C:\Users\{username}\AppData\Local\ms-playwright\chromium-1187\chrome-win;ms-playwright\chromium-1187\chrome-win" ^
-  App.py
+pyinstaller --noconfirm --onefile --windowed --noconsole --name "RPA Process Orders" --icon "C:/Users/perna/Desktop/STALLANTIS/RPA Orders/process_oders_icon.ico" --add-data "C:\Users\perna\AppData\Local\ms-playwright\chromium-1187\chrome-win;ms-playwright\chromium-1187\chrome-win" App.py
 ```
 
 #### Parameters Explained
@@ -512,15 +520,15 @@ pyinstaller --noconfirm --onefile --windowed --noconsole ^
    ```
 
 3. **Output Location**:
-   - Executable: `dist/RPA Milk Run.exe`
+   - Executable: `dist/RPA Process Orders.exe`
    - Build artifacts: `build/` folder
-   - Spec file: `RPA Milk Run.spec`
+   - Spec file: `RPA Process Orders.spec`
 
 4. **Distribution Package**:
    Create a deployment folder with:
    ```
-   RPA Milk Run/
-   ├── RPA Milk Run.exe
+   RPA Process Orders/
+   ├── RPA Process Orders.exe
    ├── credencial.json
    ├── Modelos.json
    └── Bases/
@@ -721,7 +729,7 @@ Copyright © 2025 Vincent Pernarh. All rights reserved.
 
 ---
 
-**Document Version**: 1.0  
-**Last Updated**: November 25, 2025  
+**Document Version**: 1.1  
+**Last Updated**: December 4, 2025  
 **Project**: RPA Web and Data Processing Orders  
 **Repository**: [RPA-Web-and-Data-processing-Orders](https://github.com/Vincentpernarh1/RPA-Web-and-Data-processing-Orders)         

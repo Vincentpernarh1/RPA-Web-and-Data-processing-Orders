@@ -88,7 +88,7 @@ def load_modelos():
     with open(model_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
-# --- CORRECTED MAIN AUTOMATION LOGIC ---
+
 
 def main_process(q: queue.Queue):
     """
@@ -103,12 +103,8 @@ def main_process(q: queue.Queue):
         
         modelos_to_process = load_modelos()
        
-       
-        Atualizar_Links_Pivort_tables_Single_Model("265",q)
-        
-        
-        return
-    
+        # Atualizar_Links_Pivort_tables_Single_Model("265",q)
+        # return
     
         # Data validation check
         if not isinstance(modelos_to_process, dict):
@@ -126,21 +122,17 @@ def main_process(q: queue.Queue):
             args=(url_oss, q, username, password, modelos_to_process, chromium_path)
         )
         
-
-        # For example:
-        # a14_thread = threading.Thread(target=download_A14,  
-        #         args=(url_order, q, username, password, chromium_path)
-        #         )
+        a14_thread = threading.Thread(target=download_A14,  
+                args=(url_order, q, username, password, chromium_path)
+                )
         
-
-
         # Inicializando os threads
-        # a14_thread.start()
+        a14_thread.start()
         model_thread.start()
         
         # Wait for all threads to finish
         model_thread.join()
-        # a14_thread.join()
+        a14_thread.join()
 
         q.put(("status", "Processo de automação finalizado."))
 
