@@ -122,9 +122,9 @@ def Process_A14_options(file_path, q):
             file_full_path = os.path.join(Base_folder, filename)
             q.put(("status", f"📁 Atualizando arquivo: {filename}"))
             try:
-                app = xw.App(visible=True, add_book=False)
+                app = xw.App(visible=False, add_book=False)
                 app.display_alerts = False
-                app.screen_updating = True
+                app.screen_updating = False
 
                 wb = app.books.open(file_full_path, update_links=False)
                 if 'A14' in [s.name for s in wb.sheets]:
@@ -153,12 +153,39 @@ def Process_A14_options(file_path, q):
     q.put(("status", "🎉 Processamento concluído com sucesso."))
 
 
-def download_A14(url_order,q,username,password,chromium_path) :
+def download_A14(url_order,q,username,password,chromium_path, force=False) :
+    # Check for recent A14 file if not forced
+    if not force:
+        os.makedirs("Dados", exist_ok=True)
+        dados_dir = "Dados"
+        today = datetime.now().date()
+        recent_file = None
+        max_date = None
+        
+        for filename in os.listdir(dados_dir):
+            if filename.startswith("A14_") and filename.endswith(".xls"):
+                try:
+                    date_str = filename[4:-4]  # Remove "A14_" and ".xls"
+                    file_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                    if max_date is None or file_date > max_date:
+                        max_date = file_date
+                        recent_file = filename
+                except ValueError:
+                    continue  # Skip malformed filenames
+        
+        if recent_file and max_date:
+            days_old = (today - max_date).days
+            if days_old <= 5:
+                file_path = os.path.join(dados_dir, recent_file)
+                q.put(("status", f"Arquivo A14 está atualizado (última atualização há {days_old} dias). Pulando download e processamento."))
+                q.put(("progress", 65))
+                return  # Skip download and processing
+    
     with sync_playwright() as p:
         browser = None
         try :
             browser = p.chromium.launch(
-                    headless=False, # Always headless for worker threads
+                    headless=True, # Always headless for worker threads
                     executable_path=chromium_path,
                     # args=["--start-maximized"]
                 )
@@ -185,7 +212,8 @@ def download_A14(url_order,q,username,password,chromium_path) :
             
             download = download_info.value
 
-            file_path = f"Dados/A14.xls"
+            today_str = datetime.now().date().isoformat()
+            file_path = f"Dados/A14_{today_str}.xls"
             os.makedirs("Dados", exist_ok=True)
             
             if os.path.exists(file_path):
@@ -287,7 +315,7 @@ def process_single_model(url_oss: str, q: queue.Queue, username: str, password: 
             frame = page.locator("iframe[name=\"appFrame\"]").content_frame
             inner_frame = frame.get_by_text("Your browser does not support").content_frame
             
-            inner_frame.locator("#actionMenu").click(timeout=220000)
+            inner_frame.locator("#actionMenu").click(timeout=820000)
 
             with page.expect_download(timeout=120000) as download_info:
                 inner_frame.get_by_text("Baixar CSV").click()
@@ -365,7 +393,7 @@ def Atualizar_Base_Modelos(df_to_paste, model_key, q):
         q.put(("status", f"Modelo {model_key}: Arquivo encontrado: {target_filename}"))
 
         # Use a new app instance for each thread to ensure stability
-        app = xw.App(visible=True, add_book=False)
+        app = xw.App(visible=False, add_book=False)
         app.display_alerts = False
         
         try:
@@ -471,8 +499,9 @@ def Atualizar_Links_Pivort_tables_Single_Model(model_key, q):
         q.put(("status", f"Modelo {model_key}: Arquivo BASE encontrado: {base_file}"))
         
         # Open Excel app for this thread (each thread needs its own app instance)
-        app = xw.App(visible=True, add_book=False)
+        app = xw.App(visible=False, add_book=False)
         app.display_alerts = False
+        app.screen_updating = False
         
         try:
             # First, open GRIGLIA file in this Excel instance so it's accessible
@@ -647,7 +676,7 @@ def Atualizar_Previsao_X_Istograma(model_key, q, app, wb_base, base_filename):
         
         try:
             # Access ANÁLISE PREVISÕES OPCIONAIS or ANÁLISE PREVISÕES POR OPCIONAL sheet
-            sheet_names = ['ANÁLISE PREVISÕES OPCIONAIS', 'ANÁLISE PREVISÕES POR OPCIONAL']
+            sheet_names = ['ANÁLISE PREVISÕES OPCIONAIS', 'ANÁLISE PREVISÕES POR OPCIONAL','ANÁLISE PREVISÕES']
             sheet_name = None
             
             for name in sheet_names:

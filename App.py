@@ -102,9 +102,6 @@ def main_process(q: queue.Queue):
         url_order, username, password, url_oss = credentials['url_order'], credentials['user'], credentials['password'], credentials['url_oss']
         
         modelos_to_process = load_modelos()
-       
-        # Atualizar_Links_Pivort_tables_Single_Model("265",q)
-        # return
     
         # Data validation check
         if not isinstance(modelos_to_process, dict):
@@ -122,6 +119,8 @@ def main_process(q: queue.Queue):
             args=(url_oss, q, username, password, modelos_to_process, chromium_path)
         )
         
+        
+        
         a14_thread = threading.Thread(target=download_A14,  
                 args=(url_order, q, username, password, chromium_path)
                 )
@@ -135,6 +134,34 @@ def main_process(q: queue.Queue):
         a14_thread.join()
 
         q.put(("status", "Processo de automação finalizado."))
+
+    except (FileNotFoundError, KeyError, TypeError) as e:
+        q.put(("status", f"ERRO CRÍTICO: {e}"))
+    except Exception as e:
+        q.put(("status", f"Ocorreu um erro inesperado: {e}"))
+    finally:
+        q.put(("done", True))
+
+
+def force_main_process(q: queue.Queue):
+    """
+    This is the main function for forced A14 processing.
+    It orchestrates the forced download and processing of A14.
+    """
+    try:
+        q.put(("status", "Carregando credenciais para força de A14..."))
+        q.put(("progress", 5))
+        credentials = load_credentials()
+        url_order, username, password = credentials['url_order'], credentials['user'], credentials['password']
+            
+        chromium_path = get_playwright_browser_path()
+        
+        q.put(("status", "Iniciando download forçado do A14..."))
+
+        # Call download_A14 with force=True
+        download_A14(url_order, q, username, password, chromium_path, force=True)
+
+        q.put(("status", "Processo forçado de A14 finalizado."))
 
     except (FileNotFoundError, KeyError, TypeError) as e:
         q.put(("status", f"ERRO CRÍTICO: {e}"))
@@ -208,6 +235,9 @@ class App:
         self.process_button = ttk.Button(button_frame, text="▶ Processar", command=self.start_processing_thread, style='TButton')
         self.process_button.pack(side=tk.LEFT, padx=5)
         
+        self.force_a14_button = ttk.Button(button_frame, text="🔄 Forçar Atualização de A14", command=self.force_a14_thread, style='TButton')
+        self.force_a14_button.pack(side=tk.RIGHT, padx=5)
+        
         # Log section with accent
         log_frame = ttk.LabelFrame(main_frame, text="📋 Log de Atividades", padding="11")
         log_frame.pack(pady=0, padx=2, fill=tk.BOTH, expand=True)
@@ -254,6 +284,19 @@ class App:
         
         # Start checking the queue for updates
         update_gui(self.queue, self.status_label, self.progress_bar, self.log_text, self.root, self.process_button)
+
+    def force_a14_thread(self):
+        self.force_a14_button.config(state="disabled")
+        self.progress_bar['value'] = 0
+        self.log_text.delete('1.0', tk.END)
+        self.status_label.config(text="Iniciando processo forçado de A14...")
+        
+        self.thread = threading.Thread(target=force_main_process, args=(self.queue,))
+        self.thread.daemon = True
+        self.thread.start()
+        
+        # Start checking the queue for updates
+        update_gui(self.queue, self.status_label, self.progress_bar, self.log_text, self.root, self.force_a14_button)
 
 if __name__ == "__main__":
     root = tk.Tk()
