@@ -331,11 +331,18 @@ def process_single_model(url_oss: str, q: queue.Queue, username: str, password: 
             if os.path.exists(csv_path): os.remove(csv_path)
             if os.path.exists(xlsx_path): os.remove(xlsx_path)
 
-            # download.save_as(csv_path)
-            temp_csv_path =download.path()
+            download.save_as(csv_path)
             q.put(("status", f"Modelo {key}: Salvo em {csv_path}"))
             
-            df = pd.read_csv(temp_csv_path, low_memory=False)
+            # Close browser immediately after download completion
+            try:
+                context.close()
+                browser.close()
+                q.put(("status", f"Modelo {key}: Browser fechado após download."))
+            except Exception as e:
+                q.put(("status", f"Modelo {key}: Aviso ao fechar browser: {e}"))
+            
+            df = pd.read_csv(csv_path, low_memory=False)
             if "order_type" in df.columns and not df[df["order_type"] == "PRE"].empty:
                 df_prev =df[df["order_type"] == "PRE"]
                 df_prev.to_excel(xlsx_path, index=False, engine="xlsxwriter")
@@ -356,8 +363,7 @@ def process_single_model(url_oss: str, q: queue.Queue, username: str, password: 
         except Exception as e:
             q.put(("status", f"ERRO na thread do modelo {key}: {e}"))
         finally:
-            # The 'with sync_playwright()' block handles all cleanup automatically.
-            # No need to manually close the browser here.
+            # Browser is now closed immediately after download; 'with sync_playwright()' handles any remaining cleanup.
             pass
 
 
