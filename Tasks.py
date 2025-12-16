@@ -185,11 +185,11 @@ def download_A14(url_order,q,username,password,chromium_path, force=False) :
         browser = None
         try :
             browser = p.chromium.launch(
-                    headless=True, # Always headless for worker threads
+                    headless=False, # Always headless for worker threads
                     executable_path=chromium_path,
-                    # args=["--start-maximized"]
+                    args=["--start-maximized"]
                 )
-            context = browser.new_context(viewport={'width': 1920, 'height': 1080})
+            context = browser.new_context(locale="pt-BR")
             page = context.new_page()
             page.goto(url_order)
 
@@ -200,16 +200,18 @@ def download_A14(url_order,q,username,password,chromium_path, force=False) :
             page.locator('[name="j_password"]').fill(password)
             page.locator("button[type='submit']").click()
             q.put(("status", "Login realizado com sucesso!"))
-
-            page.get_by_role("link", name="???tabstd???").hover()
-        
-            page.locator("li.ui-menuitem >> text=Download Table").click(timeout=200000)
+            
+            page.get_by_role("link", name="Tabelas Padrão").hover()
+            page.get_by_role("link", name="Download Tabela").click(timeout=200000)
+            
             page.locator("[id=\"filter:codtab_label\"]").click()
-            page.locator("[id=\"filter:codtab_panel\"]").get_by_text("???tabA14???").click()
+           
+            page.locator("[id=\"filter:codtab_panel\"]").get_by_text("A14 Descrição opcional").click()
             
             with page.expect_download() as download_info:
-                page.get_by_role("button", name="Downloads").click()
-            
+                page.get_by_role("button", name="Download").click()
+                
+            q.put(("status", "Download do relatório A14 iniciado..."))
             download = download_info.value
 
             today_str = datetime.now().date().isoformat()
