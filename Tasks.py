@@ -302,7 +302,7 @@ def process_single_model(url_oss: str, q: queue.Queue, username: str, password: 
             page = context.new_page()
 
             q.put(("status", f"Modelo {key}: Iniciando thread..."))
-            page.goto(url_oss, timeout=60000)
+            page.goto(url_oss, timeout=80000)
 
             page.locator('[name="USER_NAME"]').fill(username)
             page.locator('[name="PASSWORD"]').fill(password)
@@ -317,10 +317,10 @@ def process_single_model(url_oss: str, q: queue.Queue, username: str, password: 
             frame = page.locator("iframe[name=\"appFrame\"]").content_frame
             inner_frame = frame.get_by_text("Your browser does not support").content_frame
             
-            inner_frame.locator("#actionMenu").click(timeout=820000)
+            inner_frame.locator("#actionMenu").click(timeout=920000)
 
             with page.expect_download(timeout=120000) as download_info:
-                inner_frame.get_by_text("Baixar CSV").click()
+                inner_frame.get_by_text("Baixar CSV").click(timeout=120000)
             
             download = download_info.value
             q.put(("status", f"Modelo {key}: Download iniciado."))
