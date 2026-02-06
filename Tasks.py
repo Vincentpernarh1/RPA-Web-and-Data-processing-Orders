@@ -191,16 +191,15 @@ def download_A14(url_order,q,username,password,chromium_path, force=False) :
                 )
             context = browser.new_context(locale="pt-BR")
             page = context.new_page()
-            page.goto(url_order)
+            page.goto(url_order,timeout=100000)
 
             q.put(("status", "Realizando login..."))
             q.put(("progress", 15))
-        
+            
             page.locator('[name="j_username"]').fill(username)
             page.locator('[name="j_password"]').fill(password)
             page.locator("button[type='submit']").click()
             q.put(("status", "Login realizado com sucesso!"))
-            
             page.get_by_role("link", name="Tabelas Padrão").hover()
             page.get_by_role("link", name="Download Tabela").click(timeout=200000)
             
@@ -423,7 +422,7 @@ def Atualizar_Base_Modelos(df_to_paste, model_key, q):
                         ws.range(f'B3:AE{last_used_row}').clear_contents()
                 except:
                     # If no data exists, just clear a small range
-                    ws.range('B3:AE1000').clear_contents()
+                    ws.range('B2:AE1000').clear_contents()
                                    
                 # Proceed only if there is data left after removing the header.
                 if not df_data_only.empty:
@@ -433,34 +432,34 @@ def Atualizar_Base_Modelos(df_to_paste, model_key, q):
                     
                     q.put(("status", f"Modelo {model_key}: Colando dados ({num_data_rows} linhas)..."))
                     
-                    # 1. PASTE DATA FIRST at B3
-                    start_cell = ws.range('B3')
+                    # 1. PASTE DATA FIRST at B2
+                    start_cell = ws.range('B2')
                     start_cell.options(header=False, index=False).value = df_data_only.values
                     
                     q.put(("status", f"Modelo {model_key}: Aplicando formatação e fórmulas..."))
                     
-                    # 2. COPY FORMAT AND FORMULAS - more efficiently using copy/paste
-                    template_range = ws.range('A2:AE2')
-                    target_range = ws.range(f'A3:AE{last_row}')
+                    # # 2. COPY FORMAT AND FORMULAS - more efficiently using copy/paste
+                    # template_range = ws.range('A2:AE2')
+                    # target_range = ws.range(f'A3:AE{last_row}')
                     
-                    # Copy template formatting
-                    template_range.api.Copy()
-                    # Paste formats only (no values) to avoid overwriting data
-                    target_range.api.PasteSpecial(Paste=-4122)  # xlPasteFormats
+                    # # Copy template formatting
+                    # template_range.api.Copy()
+                    # # Paste formats only (no values) to avoid overwriting data
+                    # target_range.api.PasteSpecial(Paste=-4122)  # xlPasteFormats
                     
-                    # Copy formulas from column A (always has formulas)
-                    ws.range('A2').copy(ws.range(f'A3:A{last_row}'))
+                    # # Copy formulas from column A (always has formulas)
+                    # ws.range('A2').copy(ws.range(f'A3:A{last_row}'))
                     
-                    # Copy formulas from columns Z-AE (these columns have formulas)
-                    ws.range('Z2:AE2').copy(ws.range(f'Z3:AE{last_row}'))
+                    # # Copy formulas from columns Z-AE (these columns have formulas)
+                    # ws.range('Z2:AE2').copy(ws.range(f'Z3:AE{last_row}'))
                     
-                    # Copy formulas from columns after AE (if any exist)
-                    template_formulas = ws.range('AF2:ZZ2').formula
-                    if any(f for f in template_formulas if f and str(f).startswith('=')):
-                        ws.range('AF2:ZZ2').copy(ws.range(f'AF3:ZZ{last_row}'))
+                    # # Copy formulas from columns after AE (if any exist)
+                    # template_formulas = ws.range('AF2:ZZ2').formula
+                    # if any(f for f in template_formulas if f and str(f).startswith('=')):
+                    #     ws.range('AF2:ZZ2').copy(ws.range(f'AF3:ZZ{last_row}'))
                     
-                    # Clear clipboard
-                    app.api.CutCopyMode = False
+                    # # Clear clipboard
+                    # app.api.CutCopyMode = False
                     
                     q.put(("status", f"Modelo {model_key}: Dados colados e formatados em '{target_filename}' ({num_data_rows} linhas)."))
 
