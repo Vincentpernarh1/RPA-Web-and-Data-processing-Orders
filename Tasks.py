@@ -17,9 +17,15 @@ import pyxlsb
 import csv
 import xlwings as xw
 from playwright.sync_api import Page, Browser
+import pythoncom
 
 base_path = os.getcwd()
 bases_folder = os.path.join(base_path, "Bases")
+
+# Global lock for Excel file operations to prevent COM conflicts between threads
+excel_lock = threading.Lock()
+# Separate lock for entire pivot table update process (more restrictive)
+pivot_update_lock = threading.Lock()
 
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -263,165 +269,186 @@ def process_single_model(url_oss: str, q: queue.Queue, username: str, password: 
     This function is now COMPLETELY independent and thread-safe.
     Each thread downloads, updates BASE, and updates pivot tables.
     """
-    os.makedirs("Dados", exist_ok=True)
-    today = datetime.now().date()
+    # Initialize COM for this thread (required for Excel automation in threads)
+    pythoncom.CoInitialize()
     
-    # Check for recent model file (less than 10 days old)
-    dados_dir = "Dados"
-    recent_csv = None
-    recent_xlsx = None
-    max_date = None
-    skip_download = False
-    csv_path = None
-    xlsx_path = None
-    
-    for filename in os.listdir(dados_dir):
-        if filename.startswith(f"{key}_") and filename.endswith(".csv"):
-            try:
-                # Extract date from filename: key_YYYY-MM-DD.csv
-                date_str = filename[len(key)+1:-4]  # Remove "key_" and ".csv"
-                file_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-                if max_date is None or file_date > max_date:
-                    max_date = file_date
-                    recent_csv = filename
-                    # Check for corresponding xlsx file
-                    xlsx_name = filename[:-4] + ".xlsx"
-                    if os.path.exists(os.path.join(dados_dir, xlsx_name)):
-                        recent_xlsx = xlsx_name
-            except ValueError:
-                continue  # Skip malformed filenames
-    
-    if recent_csv and max_date:
-        days_old = (today - max_date).days
-        if days_old <= 10:
-            skip_download = True
-            csv_path = os.path.join(dados_dir, recent_csv)
-            xlsx_path = os.path.join(dados_dir, recent_xlsx) if recent_xlsx else None
-            q.put(("status", f"Modelo {key}: Arquivo está atualizado (atualizado há {days_old} dias). Pulando download."))
-    
-    # Only launch browser if download is needed
-    if not skip_download:
-        # Each thread now creates its own Playwright instance and browser.
-        with sync_playwright() as p:
-            
-            browser = None
-            try:
+    try:
+        os.makedirs("Dados", exist_ok=True)
+        today = datetime.now().date()
+        
+        # Check for recent model XLSX file (less than 10 days old)
+        # CSV is not saved permanently, only XLSX files are cached
+        dados_dir = "Dados"
+        recent_xlsx = None
+        max_date = None
+        skip_download = False
+        csv_path = None
+        xlsx_path = None
+        
+        for filename in os.listdir(dados_dir):
+            if filename.startswith(f"{key}_") and filename.endswith(".xlsx"):
+                try:
+                    # Extract date from filename: key_YYYY-MM-DD.xlsx
+                    date_str = filename[len(key)+1:-5]  # Remove "key_" and ".xlsx"
+                    file_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                    if max_date is None or file_date > max_date:
+                        max_date = file_date
+                        recent_xlsx = filename
+                except ValueError:
+                    continue  # Skip malformed filenames
+        
+        if recent_xlsx and max_date:
+            days_old = (today - max_date).days
+            if days_old <= 10:
+                skip_download = True
+                xlsx_path = os.path.join(dados_dir, recent_xlsx)
+                q.put(("status", f"Modelo {key}: Arquivo está atualizado (atualizado há {days_old} dias). Pulando download."))
+        
+        # Only launch browser if download is needed
+        if not skip_download:
+            # Each thread now creates its own Playwright instance and browser.
+            with sync_playwright() as p:
                 
-                if chromium_path:
-                    browser = p.chromium.launch(
-                    headless=False,
-                    executable_path=chromium_path,
-                    args=[
-                        "--start-maximized",
-                        "--disable-blink-features=AutomationControlled",
-                        "--disable-infobars",
-                        "--no-sandbox",
-                        "--disable-dev-shm-usage",
-                    ]
-                        )
+                browser = None
+                try:
                     
-                else : 
-                    browser = p.chromium.launch(
+                    if chromium_path:
+                        browser = p.chromium.launch(
                         headless=False,
+                        executable_path=chromium_path,
                         args=[
                             "--start-maximized",
                             "--disable-blink-features=AutomationControlled",
                             "--disable-infobars",
                             "--no-sandbox",
                             "--disable-dev-shm-usage",
-                        ],
+                        ]
+                            )
+                        
+                    else : 
+                        browser = p.chromium.launch(
+                            headless=False,
+                            args=[
+                                "--start-maximized",
+                                "--disable-blink-features=AutomationControlled",
+                                "--disable-infobars",
+                                "--no-sandbox",
+                                "--disable-dev-shm-usage",
+                            ],
+                        )
+                    
+                    context = browser.new_context(
+                        no_viewport=True,  # Use full browser window size
                     )
-                
-                context = browser.new_context(
-                    no_viewport=True,  # Use full browser window size
-                )
-                
-                
-                page = context.new_page()
+                    
+                    
+                    page = context.new_page()
 
-                q.put(("status", f"Modelo {key}: Iniciando thread..."))
-                page.goto(url_oss, timeout=80000)
+                    q.put(("status", f"Modelo {key}: Iniciando thread..."))
+                    page.goto(url_oss, timeout=80000)
 
-                page.locator('[name="USER_NAME"]').fill(username)
-                page.locator('[name="PASSWORD"]').fill(password)
-                page.locator(".signin").click()
+                    page.locator('[name="USER_NAME"]').fill(username)
+                    page.locator('[name="PASSWORD"]').fill(password)
+                    page.locator(".signin").click()
 
-                page.locator(".shellInstance").click()
-                page.locator("#sequencer_ui_instances").select_option(value)
-                page.get_by_role("link", name="Editor de programação").click(timeout=120000)
+                    page.locator(".shellInstance").click()
+                    page.locator("#sequencer_ui_instances").select_option(value)
+                    page.get_by_role("link", name="Editor de programação").click(timeout=120000)
 
-                q.put(("status", f"Modelo {key}: Aguardando página de relatório..."))
+                    q.put(("status", f"Modelo {key}: Aguardando página de relatório..."))
 
-                frame = page.locator("iframe[name=\"appFrame\"]").content_frame
-                inner_frame = frame.get_by_text("Your browser does not support").content_frame
-                
-                inner_frame.locator("#actionMenu").click(timeout=920000)
+                    frame = page.locator("iframe[name=\"appFrame\"]").content_frame
+                    inner_frame = frame.get_by_text("Your browser does not support").content_frame
+                    
+                    inner_frame.locator("#actionMenu").click(timeout=920000)
 
-                with page.expect_download(timeout=120000) as download_info:
-                    inner_frame.get_by_text("Baixar CSV").click(timeout=120000)
-                
-                download = download_info.value
-                q.put(("status", f"Modelo {key}: Download iniciado."))
-                
-                # Use date-stamped filename
-                today_str = today.isoformat()
-                csv_path = os.path.join("Dados", f"{key}_{today_str}.csv")
-                xlsx_path = os.path.join("Dados", f"{key}_{today_str}.xlsx")
-
-                if os.path.exists(csv_path): os.remove(csv_path)
-                if os.path.exists(xlsx_path): os.remove(xlsx_path)
-
-                download.save_as(csv_path)
-                q.put(("status", f"Modelo {key}: Salvo em {csv_path}"))
-                
-                # Close browser immediately after download completion
-                try:
-                    context.close()
-                    browser.close()
-                    q.put(("status", f"Modelo {key}: Browser fechado após download."))
+                    with page.expect_download(timeout=120000) as download_info:
+                        inner_frame.get_by_text("Baixar CSV").click(timeout=120000)
+                    
+                    download = download_info.value
+                    q.put(("status", f"Modelo {key}: Download iniciado."))
+                    
+                    # CSV: Use temporary download path (not saved permanently)
+                    csv_path = download.path()
+                    # q.put(("status", f"Modelo {key}: CSV baixado para temp: {csv_path}"))
+                    
+                    # CRITICAL: Process CSV BEFORE closing browser (Playwright cleans up temp files on close)
+                    # Read CSV and filter data immediately
+                    df = pd.read_csv(csv_path, low_memory=False)
+                    
+                    if "order_type" not in df.columns or df[df["order_type"] == "PRE"].empty:
+                        q.put(("status", f"Modelo {key}: AVISO - Nenhum dado com order_type='PRE' encontrado."))
+                        # Close browser before returning
+                        try:
+                            context.close()
+                            browser.close()
+                        except:
+                            pass
+                        return
+                        
+                    df_prev = df[df["order_type"] == "PRE"]
+                    
+                    # XLSX: Use date-stamped filename for permanent storage
+                    today_str = today.isoformat()
+                    xlsx_path = os.path.join("Dados", f"{key}_{today_str}.xlsx")
+                    
+                    # Remove old xlsx file if it exists
+                    if os.path.exists(xlsx_path):
+                        os.remove(xlsx_path)
+                    
+                    # Save XLSX immediately while CSV is still available
+                    df_prev.to_excel(xlsx_path, index=False, engine="xlsxwriter")
+                    q.put(("status", f"Modelo {key}: Excel criado em {xlsx_path}"))
+                    
+                    # Now safe to close browser - we have the data in df_prev and saved to XLSX
+                    try:
+                        context.close()
+                        browser.close()
+                        q.put(("status", f"Modelo {key}: Browser fechado após download."))
+                    except Exception as e:
+                        q.put(("status", f"Modelo {key}: Aviso ao fechar browser: {e}"))
+                    
                 except Exception as e:
-                    q.put(("status", f"Modelo {key}: Aviso ao fechar browser: {e}"))
-                
-            except Exception as e:
-                q.put(("status", f"ERRO na thread do modelo {key}: {e}"))
-            finally:
-                # Browser is now closed immediately after download; 'with sync_playwright()' handles any remaining cleanup.
-                pass
-    
-    # Process the file (either just downloaded or cached)
-    try:
-        if not csv_path or not os.path.exists(csv_path):
-            q.put(("status", f"Modelo {key}: ERRO - Arquivo CSV não encontrado: {csv_path}"))
+                    q.put(("status", f"ERRO na thread do modelo {key}: {e}"))
+                finally:
+                    # Browser is now closed immediately after download; 'with sync_playwright()' handles any remaining cleanup.
+                    pass
+        
+        # Process the file (either just downloaded or cached)
+        # If we have a cached XLSX, read from it directly
+        if skip_download and xlsx_path and os.path.exists(xlsx_path):
+            q.put(("status", f"Modelo {key}: Usando arquivo em cache: {xlsx_path}"))
+            df_prev = pd.read_excel(xlsx_path, engine="openpyxl")
+        # If we just downloaded, df_prev is already loaded in the download section above
+        # (to avoid reading the temp CSV after browser cleanup)
+        
+        # Verify we have data to process
+        if 'df_prev' not in locals() or df_prev is None or len(df_prev) == 0:
+            q.put(("status", f"Modelo {key}: ERRO - Nenhum dado disponível para processar."))
             return
-            
-        df = pd.read_csv(csv_path, low_memory=False)
-        if "order_type" in df.columns and not df[df["order_type"] == "PRE"].empty:
-            df_prev = df[df["order_type"] == "PRE"]
-            
-            # Create xlsx if it doesn't exist
-            if not xlsx_path or not os.path.exists(xlsx_path):
-                if not xlsx_path:
-                    # Generate xlsx path from csv path
-                    xlsx_path = csv_path[:-4] + ".xlsx"
-                df_prev.to_excel(xlsx_path, index=False, engine="xlsxwriter")
-                q.put(("status", f"Modelo {key}: Excel criado em {xlsx_path}"))
-
-            q.put(("status", f"Atualizando planilha Base para o Modelo {key}"))
-            
-            
-            # Atualizar_Base_Modelos(df_prev, key, q)
-            
-            
-            q.put(("status", f"Planilha Base do Modelo {key}: Atualizado com sucesso "))
-            
-            # Update pivot tables using the shared GRIGLIA link
-            q.put(("status", f"Modelo {key}: Atualizando tabelas dinâmicas..."))
-            Atualizar_Links_Pivort_tables_Single_Model(key, q)
+        
+        # Continue with BASE update and pivot tables
+        q.put(("status", f"Atualizando planilha Base para o Modelo {key}"))
+        
+        Atualizar_Base_Modelos(df_prev, key, q)
+        
+        
+        q.put(("status", f"Planilha Base do Modelo {key}: Atualizado com sucesso "))
+        
+        # Update pivot tables using the shared GRIGLIA link
+        q.put(("status", f"Modelo {key}: Atualizando tabelas dinâmicas..."))
+        Atualizar_Links_Pivort_tables_Single_Model(key, q)
         
         q.put(("status", f"Modelo {key}: Processamento completo concluído."))
         
     except Exception as e:
         q.put(("status", f"ERRO ao processar arquivo do modelo {key}: {e}"))
+    finally:
+        # Uninitialize COM for this thread
+        try:
+            pythoncom.CoUninitialize()
+        except Exception:
+            pass
 
 
 
@@ -461,7 +488,9 @@ def Atualizar_Base_Modelos(df_to_paste, model_key, q):
         
         try:
             q.put(("status", f"Modelo {model_key}: Abrindo arquivo {target_filename}..."))
-            wb = app.books.open(target_file_path, update_links=False)
+            with excel_lock:
+                wb = app.books.open(target_file_path, update_links=False)
+                sleep(0.5)  # Small delay after opening to prevent conflicts
             
             try:
                 ws = wb.sheets['ARQUIVO PREVISÕES']
@@ -541,14 +570,59 @@ def Atualizar_Base_Modelos(df_to_paste, model_key, q):
                     q.put(("status", f"Modelo {model_key}: AVISO - Sem dados para colar. Planilha '{target_filename}' foi limpa."))
                     
                 q.put(("status", f"Modelo {model_key}: Salvando arquivo {target_filename}..."))
-                wb.save()
+                with excel_lock:
+                    try:
+                        wb.save()
+                    except Exception as save_error:
+                        q.put(("status", f"Modelo {model_key}: ERRO ao salvar: {save_error}"))
+                        sleep(2)  # Wait before retry
+                        try:
+                            wb.api.Save()
+                            q.put(("status", f"Modelo {model_key}: Arquivo salvo usando método alternativo."))
+                        except Exception as save_error2:
+                            q.put(("status", f"Modelo {model_key}: AVISO - Não foi possível salvar: {save_error2}"))
             except Exception as sheet_error:
                 q.put(("status", f"Modelo {model_key}: ERRO ao processar a planilha em '{target_filename}': {sheet_error}"))
                 raise
             finally:
-                wb.close()
+                with excel_lock:
+                    try:
+                        wb.close()
+                    except Exception as close_error:
+                        q.put(("status", f"Modelo {model_key}: AVISO ao fechar workbook: {close_error}"))
+                        sleep(1)
+                        try:
+                            wb.api.Close(SaveChanges=False)
+                        except Exception:
+                            pass
         finally:
-            app.quit()
+            # Ensure all workbooks are closed
+            sleep(1)
+            try:
+                for wb in app.books:
+                    try:
+                        wb.close()
+                    except Exception:
+                        try:
+                            wb.api.Close(SaveChanges=False)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            
+            # Quit Excel with delays
+            sleep(2)
+            try:
+                app.quit()
+            except Exception as quit_error:
+                q.put(("status", f"Modelo {model_key}: AVISO ao fechar Excel: {quit_error}"))
+                sleep(1)
+                try:
+                    app.api.Quit()
+                except Exception:
+                    pass
+            
+            sleep(2)  # Final wait to ensure file locks are released
 
     except Exception as e:
         q.put(("status", f"Modelo {model_key}: ERRO FATAL em Atualizar_Base_Modelos: {e}"))
@@ -556,80 +630,92 @@ def Atualizar_Base_Modelos(df_to_paste, model_key, q):
                
 def Atualizar_Links_Pivort_tables_Single_Model(model_key, q):
     
+    # Initialize COM for this thread (required for Excel automation in threads)
+    pythoncom.CoInitialize()
+    
     try:
-        
-        if not os.path.exists(bases_folder):
-            q.put(("status", f"Modelo {model_key}: ERRO - Pasta 'Bases' não encontrada."))
-           
-        # Find BASE file for this model
-        base_file = None
-        for filename in os.listdir(bases_folder):
-            if (filename.upper().startswith('BASE') and 
-                model_key in filename and 
-                not filename.startswith("~")):
-                base_file = filename
-                break
-        
-        if not base_file:
-            q.put(("status", f"Modelo {model_key}: ERRO - Arquivo BASE não encontrado."))
-            return
-        
-        base_file_path = os.path.join(bases_folder, base_file)
-        q.put(("status", f"Modelo {model_key}: Arquivo BASE encontrado: {base_file}"))
-        
-        # Open Excel app for this thread (each thread needs its own app instance)
-        app = xw.App(visible=False, add_book=False)
-        app.display_alerts = False
-        app.screen_updating = False
-        
-        try:
-            # First, open GRIGLIA file in this Excel instance so it's accessible
-            griglia_file = None
+        # Use global lock to ensure only one thread updates pivot tables at a time
+        # This prevents COM corruption when multiple Excel instances interact
+        with pivot_update_lock:
+            q.put(("status", f"Modelo {model_key}: Aguardando vez para atualizar tabelas dinâmicas..."))
+            
+            if not os.path.exists(bases_folder):
+                q.put(("status", f"Modelo {model_key}: ERRO - Pasta 'Bases' não encontrada."))
+                return
+               
+            # Find BASE file for this model
+            base_file = None
             for filename in os.listdir(bases_folder):
-                if 'GRIGLIA OPCIONAIS' in filename.upper() and not filename.startswith("~"):
-                    griglia_file = filename
+                if (filename.upper().startswith('BASE') and 
+                    model_key in filename and 
+                    not filename.startswith("~")):
+                    base_file = filename
                     break
             
-            if griglia_file:
-                griglia_path = os.path.join(bases_folder, griglia_file)
-                wb_griglia_local = app.books.open(griglia_path, update_links=False)
-                q.put(("status", f"Modelo {model_key}: GRIGLIA aberto na mesma instância do Excel."))
+            if not base_file:
+                q.put(("status", f"Modelo {model_key}: ERRO - Arquivo BASE não encontrado."))
+                return
             
-            # Open BASE file for this model
-            wb_base = app.books.open(base_file_path, update_links=False)
+            base_file_path = os.path.join(bases_folder, base_file)
+            q.put(("status", f"Modelo {model_key}: Arquivo BASE encontrado: {base_file}"))
+            
+            # Open Excel app for this thread (each thread needs its own app instance)
+            app = xw.App(visible=False, add_book=False)
+            app.display_alerts = False
+            app.screen_updating = False
             
             try:
-                # Access ANALYSIS sheet
-                if 'ANALYSIS' not in [s.name for s in wb_base.sheets]:
-                    q.put(("status", f"Modelo {model_key}: ERRO - Planilha 'ANALYSIS' não encontrada."))
-                    return
+                # First, open GRIGLIA file in this Excel instance so it's accessible
+                griglia_file = None
+                for filename in os.listdir(bases_folder):
+                    if 'GRIGLIA OPCIONAIS' in filename.upper() and not filename.startswith("~"):
+                        griglia_file = filename
+                        break
                 
-                ws_analysis = wb_base.sheets['ANALYSIS']
-                q.put(("status", f"Modelo {model_key}: Planilha 'ANALYSIS' acessada."))
+                if griglia_file:
+                    griglia_path = os.path.join(bases_folder, griglia_file)
+                    with excel_lock:
+                        wb_griglia_local = app.books.open(griglia_path, update_links=False)
+                        sleep(0.5)  # Small delay after opening
+                    q.put(("status", f"Modelo {model_key}: GRIGLIA aberto na mesma instância do Excel."))
                 
-                # Find and update pivot tables
-                pivot_tables = ws_analysis.api.PivotTables()
+                # Open BASE file for this model
+                with excel_lock:
+                    wb_base = app.books.open(base_file_path, update_links=False)
+                    sleep(0.5)  # Small delay after opening
                 
-                if pivot_tables.Count == 0:
-                    q.put(("status", f"Modelo {model_key}: AVISO - Nenhuma tabela dinâmica encontrada."))
-                else:
-                    # Find last valid row in GRIGLIA BANCO sheet (column A)
-                    try:
-                        ws_griglia_banco = wb_griglia_local.sheets['BANCO']
-                        # Find last row with data in column A starting from A1
-                        last_row_griglia = ws_griglia_banco.range('A1').end('down').row
-                        q.put(("status", f"Modelo {model_key}: Última linha válida em GRIGLIA BANCO: {last_row_griglia}"))
-                    except Exception as e:
-                        q.put(("status", f"Modelo {model_key}: ERRO ao encontrar última linha em GRIGLIA: {e}. Usando linha padrão 3207."))
-                        last_row_griglia = 3207
+                try:
+                    # Access ANALYSIS sheet
+                    if 'ANALYSIS' not in [s.name for s in wb_base.sheets]:
+                        q.put(("status", f"Modelo {model_key}: ERRO - Planilha 'ANALYSIS' não encontrada."))
+                        return
                     
-                    for i in range(1, pivot_tables.Count + 1):
-                        pivot_table = pivot_tables.Item(i)
-                        pivot_name = pivot_table.Name
+                    ws_analysis = wb_base.sheets['ANALYSIS']
+                    q.put(("status", f"Modelo {model_key}: Planilha 'ANALYSIS' acessada."))
+                    
+                    # Find and update pivot tables
+                    pivot_tables = ws_analysis.api.PivotTables()
+                    
+                    if pivot_tables.Count == 0:
+                        q.put(("status", f"Modelo {model_key}: AVISO - Nenhuma tabela dinâmica encontrada."))
+                    else:
+                        # Find last valid row in GRIGLIA BANCO sheet (column A)
+                        try:
+                            ws_griglia_banco = wb_griglia_local.sheets['BANCO']
+                            # Find last row with data in column A starting from A1
+                            last_row_griglia = ws_griglia_banco.range('A1').end('down').row
+                            q.put(("status", f"Modelo {model_key}: Última linha válida em GRIGLIA BANCO: {last_row_griglia}"))
+                        except Exception as e:
+                            q.put(("status", f"Modelo {model_key}: ERRO ao encontrar última linha em GRIGLIA: {e}. Usando linha padrão 3207."))
+                            last_row_griglia = 3207
                         
-                        # Check pivot table location
-                        pivot_location = pivot_table.TableRange1.Address
-                        q.put(("status", f"Modelo {model_key}: Processando '{pivot_name}' em {pivot_location}"))
+                        for i in range(1, pivot_tables.Count + 1):
+                            pivot_table = pivot_tables.Item(i)
+                            pivot_name = pivot_table.Name
+                            
+                            # Check pivot table location
+                            pivot_location = pivot_table.TableRange1.Address
+                            q.put(("status", f"Modelo {model_key}: Processando '{pivot_name}' em {pivot_location}"))
                         
                         # Update the data source using the shared GRIGLIA link
                         try:
@@ -698,31 +784,112 @@ def Atualizar_Links_Pivort_tables_Single_Model(model_key, q):
                             else:
                                 q.put(("status", f"Modelo {model_key}: Não foi possível ler cabeçalhos para diagnóstico."))
 
-                
-                # Save the BASE file (GRIGLIA must stay open until after save)
-                q.put(("status", f"Modelo {model_key}: Salvando arquivo BASE..."))
-                wb_base.save()
-                q.put(("status", f"Modelo {model_key}: Tabelas dinâmicas atualizadas e arquivo salvo."))
-                
-                # Update PREVISÕES X ISTOGRAMA file (keep BASE file open)
-                Atualizar_Previsao_X_Istograma(model_key, q, app, wb_base, base_file)
-                
-                
+                    
+                    # Save the BASE file (GRIGLIA must stay open until after save)
+                    q.put(("status", f"Modelo {model_key}: Salvando arquivo BASE..."))
+                    save_successful = False
+                    with excel_lock:
+                        try:
+                            wb_base.save()
+                            q.put(("status", f"Modelo {model_key}: Tabelas dinâmicas atualizadas e arquivo salvo."))
+                            save_successful = True
+                        except Exception as save_error:
+                            q.put(("status", f"Modelo {model_key}: ERRO ao salvar BASE: {save_error}"))
+                            sleep(3)  # Wait before retry
+                            # Try alternative save method
+                            try:
+                                wb_base.api.Save()
+                                q.put(("status", f"Modelo {model_key}: Arquivo salvo usando método alternativo."))
+                                save_successful = True
+                            except Exception as save_error2:
+                                q.put(("status", f"Modelo {model_key}: Excel COM corrompido, tentando recuperação..."))
+                                # COM is corrupted - try to force save by closing workbook with save
+                                try:
+                                    wb_base.api.Close(SaveChanges=True)
+                                    q.put(("status", f"Modelo {model_key}: Arquivo fechado com salvar=True."))
+                                    save_successful = True
+                                    wb_base = None  # Mark as closed
+                                except Exception:
+                                    q.put(("status", f"Modelo {model_key}: AVISO - Não foi possível salvar BASE."))
+                    
+                    # Update PREVISÕES X ISTOGRAMA file (keep BASE file open)
+                    if save_successful:
+                        Atualizar_Previsao_X_Istograma(model_key, q, app, wb_base, base_file)
+                    else:
+                        q.put(("status", f"Modelo {model_key}: Pulando PREVISÕES debido a erro em BASE."))
+                    
+                finally:
+                    # Close BASE workbook with error handling (only if not already closed)
+                    if wb_base is not None:
+                        with excel_lock:
+                            sleep(1)  # Wait before closing
+                            try:
+                                wb_base.close()
+                            except Exception as close_error:
+                                q.put(("status", f"Modelo {model_key}: AVISO ao fechar BASE: {close_error}"))
+                                sleep(1)
+                                try:
+                                    wb_base.api.Close(SaveChanges=False)
+                                except Exception:
+                                    pass
+                            sleep(1)  # Wait after closing
             finally:
-                wb_base.close()
-            
-            # Close local GRIGLIA file AFTER BASE file is closed
-            if griglia_file and 'wb_griglia_local' in locals():
-                wb_griglia_local.close()
-                q.put(("status", f"Modelo {model_key}: GRIGLIA local fechado."))
+                # Close local GRIGLIA file AFTER BASE file is closed
+                if griglia_file and 'wb_griglia_local' in locals():
+                    with excel_lock:
+                        try:
+                            wb_griglia_local.close()
+                            q.put(("status", f"Modelo {model_key}: GRIGLIA local fechado."))
+                        except Exception as griglia_close_error:
+                            q.put(("status", f"Modelo {model_key}: AVISO ao fechar GRIGLIA: {griglia_close_error}"))
+                            sleep(1)
+                            try:
+                                wb_griglia_local.api.Close(SaveChanges=False)
+                            except Exception:
+                                pass
                 
-        finally:
-            app.quit()
+                # Ensure ALL workbooks are closed before quitting Excel
+                sleep(1)
+                try:
+                    # Close any remaining open workbooks in this app instance
+                    for wb in app.books:
+                        try:
+                            wb.close()
+                        except Exception:
+                            try:
+                                wb.api.Close(SaveChanges=False)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                
+                # Quit Excel app with error handling
+                sleep(2)  # Wait before quitting to avoid COM conflicts
+                try:
+                    app.quit()
+                    q.put(("status", f"Modelo {model_key}: Excel fechado com sucesso."))
+                except Exception as quit_error:
+                    q.put(("status", f"Modelo {model_key}: AVISO ao fechar Excel: {quit_error}"))
+                    sleep(2)
+                    try:
+                        app.api.Quit()
+                        q.put(("status", f"Modelo {model_key}: Excel fechado (método alternativo)."))
+                    except Exception:
+                        q.put(("status", f"Modelo {model_key}: AVISO - Excel pode não ter fechado corretamente."))
+                
+                # Final wait to ensure Excel releases file locks
+                sleep(3)
         
     except Exception as e:
         q.put(("status", f"Modelo {model_key}: ERRO em Atualizar_Links_Pivort_tables_Single_Model: {e}"))
         import traceback
         q.put(("status", f"Modelo {model_key}: Traceback: {traceback.format_exc()}"))
+    finally:
+        # Uninitialize COM for this thread
+        try:
+            pythoncom.CoUninitialize()
+        except Exception:
+            pass
         
            
 def Atualizar_Previsao_X_Istograma(model_key, q, app, wb_base, base_filename):
@@ -751,7 +918,20 @@ def Atualizar_Previsao_X_Istograma(model_key, q, app, wb_base, base_filename):
         q.put(("status", f"Modelo {model_key}: Arquivo PREVISÕES encontrado: {previsoes_file}"))
         
         # Open PREVISÕES X ISTOGRAMA file in the same Excel instance
-        wb_previsoes = app.books.open(previsoes_file_path, update_links=False)
+        wb_previsoes = None
+        with excel_lock:
+            try:
+                wb_previsoes = app.books.open(previsoes_file_path, update_links=False)
+                sleep(0.5)  # Small delay after opening
+            except Exception as open_error:
+                q.put(("status", f"Modelo {model_key}: ERRO ao abrir PREVISÕES: {open_error}"))
+                # Excel app might be in corrupted state - try to continue without PREVISÕES update
+                q.put(("status", f"Modelo {model_key}: Pulando atualização de PREVISÕES devido a erro de abertura."))
+                return
+        
+        if wb_previsoes is None:
+            q.put(("status", f"Modelo {model_key}: AVISO - Não foi possível abrir PREVISÕES. Pulando..."))
+            return
         
         try:
             # Access ANÁLISE PREVISÕES OPCIONAIS or ANÁLISE PREVISÕES POR OPCIONAL sheet
@@ -835,14 +1015,35 @@ def Atualizar_Previsao_X_Istograma(model_key, q, app, wb_base, base_filename):
             
             # Save the PREVISÕES X ISTOGRAMA file
             q.put(("status", f"Modelo {model_key}: Salvando arquivo PREVISÕES X ISTOGRAMA..."))
-            wb_previsoes.save()
-            q.put(("status", f"Modelo {model_key}: PREVISÕES X ISTOGRAMA atualizado e salvo com sucesso."))
+            with excel_lock:
+                try:
+                    wb_previsoes.save()
+                    q.put(("status", f"Modelo {model_key}: PREVISÕES X ISTOGRAMA atualizado e salvo com sucesso."))
+                except Exception as save_error:
+                    q.put(("status", f"Modelo {model_key}: ERRO ao salvar PREVISÕES: {save_error}"))
+                    sleep(2)  # Wait before retry
+                    try:
+                        wb_previsoes.api.Save()
+                        q.put(("status", f"Modelo {model_key}: PREVISÕES salvo usando método alternativo."))
+                    except Exception as save_error2:
+                        q.put(("status", f"Modelo {model_key}: AVISO - Não foi possível salvar PREVISÕES: {save_error2}"))
             
             Criar_Dados_A_Analizar_Previsoes(wb_previsoes, model_key, q)
             
         finally:
-            wb_previsoes.close()
-            q.put(("status", f"Modelo {model_key}: Arquivo PREVISÕES X ISTOGRAMA fechado."))
+            with excel_lock:
+                sleep(1)  # Wait before closing
+                try:
+                    wb_previsoes.close()
+                    q.put(("status", f"Modelo {model_key}: Arquivo PREVISÕES X ISTOGRAMA fechado."))
+                except Exception as close_error:
+                    q.put(("status", f"Modelo {model_key}: AVISO ao fechar PREVISÕES: {close_error}"))
+                    sleep(1)
+                    try:
+                        wb_previsoes.api.Close(SaveChanges=False)
+                    except Exception:
+                        pass
+                sleep(1)  # Wait after closing to ensure file lock is released
             
     except Exception as e:
         q.put(("status", f"Modelo {model_key}: ERRO em Atualizar_Previsao_X_Istograma: {e}"))
@@ -1028,8 +1229,18 @@ def Criar_Dados_A_Analizar_Previsoes(wb_previsoes, model_key, q):
         
         # Step 7: Save the workbook
         q.put(("status", f"Modelo {model_key}: Salvando planilha '{target_sheet_name}'..."))
-        wb_previsoes.save()
-        q.put(("status", f"Modelo {model_key}: Planilha '{target_sheet_name}' criada e salva com sucesso."))
+        with excel_lock:
+            try:
+                wb_previsoes.save()
+                q.put(("status", f"Modelo {model_key}: Planilha '{target_sheet_name}' criada e salva com sucesso."))
+            except Exception as save_error:
+                q.put(("status", f"Modelo {model_key}: ERRO ao salvar planilha '{target_sheet_name}': {save_error}"))
+                sleep(2)  # Wait before retry
+                try:
+                    wb_previsoes.api.Save()
+                    q.put(("status", f"Modelo {model_key}: Planilha salva usando método alternativo."))
+                except Exception as save_error2:
+                    q.put(("status", f"Modelo {model_key}: AVISO - Não foi possível salvar '{target_sheet_name}': {save_error2}"))
         
     except Exception as e:
         q.put(("status", f"Modelo {model_key}: ERRO em Criar_Dados_A_Analizar_Previsoes: {e}"))
