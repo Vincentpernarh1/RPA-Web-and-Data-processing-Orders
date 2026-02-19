@@ -265,6 +265,7 @@ def process_single_model(url_oss: str, q: queue.Queue, username: str, password: 
     """
     # Each thread now creates its own Playwright instance and browser.
     with sync_playwright() as p:
+        
         browser = None
         try:
             
@@ -351,7 +352,10 @@ def process_single_model(url_oss: str, q: queue.Queue, username: str, password: 
                 q.put(("status", f"Modelo {key}: Excel criado em {xlsx_path}"))
 
                 q.put(("status", f"Atualizando planilha Base para o Modelo {key}"))
-                Atualizar_Base_Modelos(df_prev, key, q)
+                
+                
+                # Atualizar_Base_Modelos(df_prev, key, q)
+                
                 
                 q.put(("status", f"Planilha Base do Modelo {key}: Atualizado com sucesso "))
                 
@@ -412,17 +416,34 @@ def Atualizar_Base_Modelos(df_to_paste, model_key, q):
                 q.put(("status", f"Modelo {model_key}: Limpando dados antigos da planilha..."))
                 
                 # Prepare the data: Remove only the first row (the header).
-                df_data_only = df_to_paste.iloc[1:]
+                df_data_only = df_to_paste.iloc[1:].copy()
+                
+                # Convert date columns from dd/MM/YYYY string format to datetime objects
+                # This prevents Excel from misinterpreting dates as MM/dd/YYYY
+                for col in df_data_only.columns:
+                    # Check if column contains date-like strings (e.g., "01/02/2026")
+                    sample = df_data_only[col].dropna().astype(str).head(10)
+                    if sample.str.match(r'^\d{2}/\d{2}/\d{4}$').any():
+                        try:
+                            # Convert from dd/MM/YYYY format to datetime
+                            df_data_only[col] = pd.to_datetime(
+                                df_data_only[col], 
+                                format='%d/%m/%Y', 
+                                errors='coerce'
+                            )
+                            # q.put(("status", f"Modelo {model_key}: Coluna '{col}' convertida de dd/MM/YYYY para datetime"))
+                        except Exception as date_error:
+                            q.put(("status", f"Modelo {model_key}: Aviso - Não foi possível converter coluna '{col}': {date_error}"))
                 
                 # STOP AT AE TO AVOID PIVOT TABLE
                 try:
                     used_range = ws.range('B3').expand('table')
                     if used_range.rows.count > 0:
                         last_used_row = used_range.last_cell.row
-                        ws.range(f'B3:AE{last_used_row}').clear_contents()
+                        ws.range(f'B3:Y{last_used_row}').clear_contents()
                 except:
                     # If no data exists, just clear a small range
-                    ws.range('B2:AE1000').clear_contents()
+                    ws.range('B2:Y1000').clear_contents()
                                    
                 # Proceed only if there is data left after removing the header.
                 if not df_data_only.empty:
@@ -439,8 +460,8 @@ def Atualizar_Base_Modelos(df_to_paste, model_key, q):
                     q.put(("status", f"Modelo {model_key}: Aplicando formatação e fórmulas..."))
                     
                     # # 2. COPY FORMAT AND FORMULAS - more efficiently using copy/paste
-                    # template_range = ws.range('A2:AE2')
-                    # target_range = ws.range(f'A3:AE{last_row}')
+                    # template_range = ws.range('A2:Y2')
+                    # target_range = ws.range(f'A3:Y{last_row}')
                     
                     # # Copy template formatting
                     # template_range.api.Copy()
@@ -766,7 +787,7 @@ def Atualizar_Previsao_X_Istograma(model_key, q, app, wb_base, base_filename):
             wb_previsoes.save()
             q.put(("status", f"Modelo {model_key}: PREVISÕES X ISTOGRAMA atualizado e salvo com sucesso."))
             
-            
+            return
             Criar_Dados_A_Analizar_Previsoes(wb_previsoes, model_key, q)
             
         finally:
