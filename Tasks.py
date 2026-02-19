@@ -263,113 +263,165 @@ def process_single_model(url_oss: str, q: queue.Queue, username: str, password: 
     This function is now COMPLETELY independent and thread-safe.
     Each thread downloads, updates BASE, and updates pivot tables.
     """
-    # Each thread now creates its own Playwright instance and browser.
-    with sync_playwright() as p:
-        
-        browser = None
-        try:
+    os.makedirs("Dados", exist_ok=True)
+    today = datetime.now().date()
+    
+    # Check for recent model file (less than 10 days old)
+    dados_dir = "Dados"
+    recent_csv = None
+    recent_xlsx = None
+    max_date = None
+    skip_download = False
+    csv_path = None
+    xlsx_path = None
+    
+    for filename in os.listdir(dados_dir):
+        if filename.startswith(f"{key}_") and filename.endswith(".csv"):
+            try:
+                # Extract date from filename: key_YYYY-MM-DD.csv
+                date_str = filename[len(key)+1:-4]  # Remove "key_" and ".csv"
+                file_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                if max_date is None or file_date > max_date:
+                    max_date = file_date
+                    recent_csv = filename
+                    # Check for corresponding xlsx file
+                    xlsx_name = filename[:-4] + ".xlsx"
+                    if os.path.exists(os.path.join(dados_dir, xlsx_name)):
+                        recent_xlsx = xlsx_name
+            except ValueError:
+                continue  # Skip malformed filenames
+    
+    if recent_csv and max_date:
+        days_old = (today - max_date).days
+        if days_old <= 10:
+            skip_download = True
+            csv_path = os.path.join(dados_dir, recent_csv)
+            xlsx_path = os.path.join(dados_dir, recent_xlsx) if recent_xlsx else None
+            q.put(("status", f"Modelo {key}: Arquivo está atualizado (atualizado há {days_old} dias). Pulando download."))
+    
+    # Only launch browser if download is needed
+    if not skip_download:
+        # Each thread now creates its own Playwright instance and browser.
+        with sync_playwright() as p:
             
-            if chromium_path:
-                browser = p.chromium.launch(
-                headless=False,
-                executable_path=chromium_path,
-                args=[
-                    "--start-maximized",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-infobars",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                ]
-                    )
+            browser = None
+            try:
                 
-            else : 
-                browser = p.chromium.launch(
+                if chromium_path:
+                    browser = p.chromium.launch(
                     headless=False,
+                    executable_path=chromium_path,
                     args=[
                         "--start-maximized",
                         "--disable-blink-features=AutomationControlled",
                         "--disable-infobars",
                         "--no-sandbox",
                         "--disable-dev-shm-usage",
-                    ],
+                    ]
+                        )
+                    
+                else : 
+                    browser = p.chromium.launch(
+                        headless=False,
+                        args=[
+                            "--start-maximized",
+                            "--disable-blink-features=AutomationControlled",
+                            "--disable-infobars",
+                            "--no-sandbox",
+                            "--disable-dev-shm-usage",
+                        ],
+                    )
+                
+                context = browser.new_context(
+                    no_viewport=True,  # Use full browser window size
                 )
-            
-            context = browser.new_context(
-                no_viewport=True,  # Use full browser window size
-            )
-            
-            
-            page = context.new_page()
+                
+                
+                page = context.new_page()
 
-            q.put(("status", f"Modelo {key}: Iniciando thread..."))
-            page.goto(url_oss, timeout=80000)
+                q.put(("status", f"Modelo {key}: Iniciando thread..."))
+                page.goto(url_oss, timeout=80000)
 
-            page.locator('[name="USER_NAME"]').fill(username)
-            page.locator('[name="PASSWORD"]').fill(password)
-            page.locator(".signin").click()
+                page.locator('[name="USER_NAME"]').fill(username)
+                page.locator('[name="PASSWORD"]').fill(password)
+                page.locator(".signin").click()
 
-            page.locator(".shellInstance").click()
-            page.locator("#sequencer_ui_instances").select_option(value)
-            page.get_by_role("link", name="Editor de programação").click(timeout=120000)
+                page.locator(".shellInstance").click()
+                page.locator("#sequencer_ui_instances").select_option(value)
+                page.get_by_role("link", name="Editor de programação").click(timeout=120000)
 
-            q.put(("status", f"Modelo {key}: Aguardando página de relatório..."))
+                q.put(("status", f"Modelo {key}: Aguardando página de relatório..."))
 
-            frame = page.locator("iframe[name=\"appFrame\"]").content_frame
-            inner_frame = frame.get_by_text("Your browser does not support").content_frame
-            
-            inner_frame.locator("#actionMenu").click(timeout=920000)
+                frame = page.locator("iframe[name=\"appFrame\"]").content_frame
+                inner_frame = frame.get_by_text("Your browser does not support").content_frame
+                
+                inner_frame.locator("#actionMenu").click(timeout=920000)
 
-            with page.expect_download(timeout=120000) as download_info:
-                inner_frame.get_by_text("Baixar CSV").click(timeout=120000)
-            
-            download = download_info.value
-            q.put(("status", f"Modelo {key}: Download iniciado."))
+                with page.expect_download(timeout=120000) as download_info:
+                    inner_frame.get_by_text("Baixar CSV").click(timeout=120000)
+                
+                download = download_info.value
+                q.put(("status", f"Modelo {key}: Download iniciado."))
+                
+                # Use date-stamped filename
+                today_str = today.isoformat()
+                csv_path = os.path.join("Dados", f"{key}_{today_str}.csv")
+                xlsx_path = os.path.join("Dados", f"{key}_{today_str}.xlsx")
 
-            os.makedirs("Dados", exist_ok=True)
-            
-            csv_path = os.path.join("Dados", f"{key}.csv")
-            xlsx_path = os.path.join("Dados", f"{key}.xlsx")
+                if os.path.exists(csv_path): os.remove(csv_path)
+                if os.path.exists(xlsx_path): os.remove(xlsx_path)
 
-            if os.path.exists(csv_path): os.remove(csv_path)
-            if os.path.exists(xlsx_path): os.remove(xlsx_path)
-
-            download.save_as(csv_path)
-            q.put(("status", f"Modelo {key}: Salvo em {csv_path}"))
-            
-            # Close browser immediately after download completion
-            try:
-                context.close()
-                browser.close()
-                q.put(("status", f"Modelo {key}: Browser fechado após download."))
+                download.save_as(csv_path)
+                q.put(("status", f"Modelo {key}: Salvo em {csv_path}"))
+                
+                # Close browser immediately after download completion
+                try:
+                    context.close()
+                    browser.close()
+                    q.put(("status", f"Modelo {key}: Browser fechado após download."))
+                except Exception as e:
+                    q.put(("status", f"Modelo {key}: Aviso ao fechar browser: {e}"))
+                
             except Exception as e:
-                q.put(("status", f"Modelo {key}: Aviso ao fechar browser: {e}"))
+                q.put(("status", f"ERRO na thread do modelo {key}: {e}"))
+            finally:
+                # Browser is now closed immediately after download; 'with sync_playwright()' handles any remaining cleanup.
+                pass
+    
+    # Process the file (either just downloaded or cached)
+    try:
+        if not csv_path or not os.path.exists(csv_path):
+            q.put(("status", f"Modelo {key}: ERRO - Arquivo CSV não encontrado: {csv_path}"))
+            return
             
-            df = pd.read_csv(csv_path, low_memory=False)
-            if "order_type" in df.columns and not df[df["order_type"] == "PRE"].empty:
-                df_prev =df[df["order_type"] == "PRE"]
+        df = pd.read_csv(csv_path, low_memory=False)
+        if "order_type" in df.columns and not df[df["order_type"] == "PRE"].empty:
+            df_prev = df[df["order_type"] == "PRE"]
+            
+            # Create xlsx if it doesn't exist
+            if not xlsx_path or not os.path.exists(xlsx_path):
+                if not xlsx_path:
+                    # Generate xlsx path from csv path
+                    xlsx_path = csv_path[:-4] + ".xlsx"
                 df_prev.to_excel(xlsx_path, index=False, engine="xlsxwriter")
-
                 q.put(("status", f"Modelo {key}: Excel criado em {xlsx_path}"))
 
-                q.put(("status", f"Atualizando planilha Base para o Modelo {key}"))
-                
-                
-                # Atualizar_Base_Modelos(df_prev, key, q)
-                
-                
-                q.put(("status", f"Planilha Base do Modelo {key}: Atualizado com sucesso "))
-                
-                # Update pivot tables using the shared GRIGLIA link
-                q.put(("status", f"Modelo {key}: Atualizando tabelas dinâmicas..."))
-                Atualizar_Links_Pivort_tables_Single_Model(key, q)
+            q.put(("status", f"Atualizando planilha Base para o Modelo {key}"))
             
-            q.put(("status", f"Modelo {key}: Processamento completo concluído."))
-
-        except Exception as e:
-            q.put(("status", f"ERRO na thread do modelo {key}: {e}"))
-        finally:
-            # Browser is now closed immediately after download; 'with sync_playwright()' handles any remaining cleanup.
-            pass
+            
+            # Atualizar_Base_Modelos(df_prev, key, q)
+            
+            
+            q.put(("status", f"Planilha Base do Modelo {key}: Atualizado com sucesso "))
+            
+            # Update pivot tables using the shared GRIGLIA link
+            q.put(("status", f"Modelo {key}: Atualizando tabelas dinâmicas..."))
+            Atualizar_Links_Pivort_tables_Single_Model(key, q)
+        
+        q.put(("status", f"Modelo {key}: Processamento completo concluído."))
+        
+    except Exception as e:
+        q.put(("status", f"ERRO ao processar arquivo do modelo {key}: {e}"))
 
 
 
@@ -508,8 +560,7 @@ def Atualizar_Links_Pivort_tables_Single_Model(model_key, q):
         
         if not os.path.exists(bases_folder):
             q.put(("status", f"Modelo {model_key}: ERRO - Pasta 'Bases' não encontrada."))
-            return
-        
+           
         # Find BASE file for this model
         base_file = None
         for filename in os.listdir(bases_folder):
@@ -787,7 +838,6 @@ def Atualizar_Previsao_X_Istograma(model_key, q, app, wb_base, base_filename):
             wb_previsoes.save()
             q.put(("status", f"Modelo {model_key}: PREVISÕES X ISTOGRAMA atualizado e salvo com sucesso."))
             
-            return
             Criar_Dados_A_Analizar_Previsoes(wb_previsoes, model_key, q)
             
         finally:
