@@ -245,9 +245,9 @@ def download_por_modelo(url_oss, q, username, password, Modelos, chromium_path):
     
     # Start all model threads
     for key, value in Modelos.items():
-        if key == '611':
-            q.put(("status", "Pulando modelo 611 com falha conhecida."))
-            continue
+        # if key == '611':
+        #     q.put(("status", "Pulando modelo 611 com falha conhecida."))
+        #     continue
             
         thread = threading.Thread(
             target=process_single_model,
@@ -360,7 +360,8 @@ def process_single_model(url_oss: str, q: queue.Queue, username: str, password: 
                     frame = page.locator("iframe[name=\"appFrame\"]").content_frame
                     inner_frame = frame.get_by_text("Your browser does not support").content_frame
                     
-                    inner_frame.locator("#actionMenu").click(timeout=920000)
+                    inner_frame.locator("#actionMenu").nth(0).click(timeout=1000000)
+                    
 
                     with page.expect_download(timeout=120000) as download_info:
                         inner_frame.get_by_text("Baixar CSV").click(timeout=120000)
