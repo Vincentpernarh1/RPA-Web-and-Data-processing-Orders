@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import shutil
 import threading
 import queue
 import tkinter as tk
@@ -430,7 +431,65 @@ def process_single_model(url_oss: str, q: queue.Queue, username: str, password: 
         
         # Continue with BASE update and pivot tables
         q.put(("status", f"Atualizando planilha Base para o Modelo {key}"))
-        
+
+        # ---- Model 281 split: Brazil (mkt_code 3433/3491) vs Others ----
+        if key == '281':
+            # Ensure segment files exist; recreate from BASE 281.xlsb if missing
+            _orig_base = os.path.join(bases_folder, 'BASE 281.xlsb')
+            _orig_prev = os.path.join(bases_folder, 'PREVISÕES X ISTOGRAMA 281.xlsb')
+            for _segment in ('Brazil', 'Others'):
+                _seg_base = os.path.join(bases_folder, f'BASE 281 {_segment}.xlsb')
+                _seg_prev = os.path.join(bases_folder, f'PREVISÕES X ISTOGRAMA 281 {_segment}.xlsb')
+                if not os.path.exists(_seg_base):
+                    if os.path.exists(_orig_base):
+                        shutil.copy2(_orig_base, _seg_base)
+                        q.put(("status", f"Modelo 281: 'BASE 281 {_segment}.xlsb' recriado a partir de 'BASE 281.xlsb'."))
+                    else:
+                        q.put(("status", f"Modelo 281: AVISO - 'BASE 281 {_segment}.xlsb' e 'BASE 281.xlsb' não encontrados."))
+                if not os.path.exists(_seg_prev):
+                    if os.path.exists(_orig_prev):
+                        shutil.copy2(_orig_prev, _seg_prev)
+                        q.put(("status", f"Modelo 281: 'PREVISÕES X ISTOGRAMA 281 {_segment}.xlsb' recriado a partir do original."))
+                    else:
+                        q.put(("status", f"Modelo 281: AVISO - 'PREVISÕES X ISTOGRAMA 281 {_segment}.xlsb' e original não encontrados."))
+            # Delete original 281 files now that segment files exist
+            for _orig in (_orig_base, _orig_prev):
+                if os.path.exists(_orig):
+                    try:
+                        os.remove(_orig)
+                        q.put(("status", f"Modelo 281: '{os.path.basename(_orig)}' removido após recriação dos segmentos."))
+                    except Exception as _del_e:
+                        q.put(("status", f"Modelo 281: AVISO - Não foi possível remover '{os.path.basename(_orig)}': {_del_e}"))
+
+            brazil_mkt_codes = {'3433', '3491'}
+            if 'mkt_code' not in df_prev.columns:
+                q.put(("status", f"Modelo 281: ERRO - Coluna 'mkt_code' não encontrada para divisão Brazil/Others. Colunas disponíveis: {list(df_prev.columns)}"))
+                return
+
+            mkt_str = df_prev['mkt_code'].astype(str).str.strip()
+            df_brazil = df_prev[mkt_str.isin(brazil_mkt_codes)].copy()
+            df_others = df_prev[~mkt_str.isin(brazil_mkt_codes)].copy()
+
+            q.put(("status", f"Modelo 281: Divisão concluída - Brazil: {len(df_brazil)} linhas (mkt_code 3433/3491) | Others: {len(df_others)} linhas"))
+
+            for segment_df, segment_key, segment_name in [
+                (df_brazil, '281 Brazil', 'Brazil'),
+                (df_others, '281 Others', 'Others'),
+            ]:
+                if segment_df.empty:
+                    q.put(("status", f"Modelo 281: Segmento '{segment_name}' vazio, pulando."))
+                    continue
+
+                q.put(("status", f"Modelo 281: Processando segmento '{segment_name}'..."))
+                Atualizar_Base_Modelos(segment_df, segment_key, q)
+                q.put(("status", f"Modelo 281: Base '{segment_name}' atualizado com sucesso."))
+                Atualizar_Links_Pivort_tables_Single_Model(segment_key, q)
+                q.put(("status", f"Modelo 281: Processamento '{segment_name}' concluído."))
+
+            q.put(("status", f"Modelo 281: Processamento completo (Brazil + Others) concluído."))
+            return
+        # ---- End Model 281 split ----
+
         Atualizar_Base_Modelos(df_prev, key, q)
         
         
